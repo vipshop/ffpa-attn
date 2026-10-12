@@ -4,9 +4,9 @@
   </p>
   <img src=https://img.shields.io/badge/language-CUDA/Python-brightgreen.svg >
   <a href="https://pepy.tech/projects/ffpa-attn"><img src=https://static.pepy.tech/personalized-badge/ffpa-attn?period=total&units=ABBREVIATION&left_color=GRAY&right_color=BLUE&left_text=downloads/pypi ></a>
-  <a href="https://pypi.org/project/ffpa-attn/"><img src=https://img.shields.io/github/release/xlite-dev/ffpa-attn.svg?color=GREEN ></a>
-  <img src=https://img.shields.io/github/stars/xlite-dev/ffpa-attn.svg?style=dark >
-  <img src="https://img.shields.io/github/license/xlite-dev/ffpa-attn.svg?color=blue"><br>
+  <a href="https://pypi.org/project/ffpa-attn/"><img src=https://img.shields.io/github/release/vipshop/ffpa-attn.svg?color=GREEN ></a>
+  <img src=https://img.shields.io/github/stars/vipshop/ffpa-attn.svg?style=dark >
+  <img src="https://img.shields.io/github/license/vipshop/ffpa-attn.svg?color=blue"><br>
   <img src="assets/ffpa-api.png" width="700px">
 </div>
 
@@ -14,7 +14,7 @@
 
 <div align='center' markdown="1">
 
-|[Self Attn](https://github.com/xlite-dev/ffpa-attn/tree/main/bench)| [GQA/MQA](https://github.com/xlite-dev/ffpa-attn/tree/main/bench) |[Cross Attn](https://github.com/xlite-dev/ffpa-attn/tree/main/bench)|[Causal/Mask](https://github.com/xlite-dev/ffpa-attn/tree/main/bench)|[Dropout](https://github.com/xlite-dev/ffpa-attn/tree/main/bench)|[Headdim](#ffpa-design)|[Fwd/Bwd](https://github.com/xlite-dev/ffpa-attn/tree/main/bench)|
+|[Self Attn](https://github.com/vipshop/ffpa-attn/tree/main/bench)| [GQA/MQA](https://github.com/vipshop/ffpa-attn/tree/main/bench) |[Cross Attn](https://github.com/vipshop/ffpa-attn/tree/main/bench)|[Causal/Mask](https://github.com/vipshop/ffpa-attn/tree/main/bench)|[Dropout](https://github.com/vipshop/ffpa-attn/tree/main/bench)|[Headdim](#ffpa-design)|[Fwd/Bwd](https://github.com/vipshop/ffpa-attn/tree/main/bench)|
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 |✔️(`Nq=Nkv`)|✔️(`Hq!=Hkv`)|✔️(`Nq!=Nkv`)|✔️(`attn_mask`)|✔️(`p>0`)|**320~1024** |**1.5x~6x↑** |
 
@@ -28,13 +28,13 @@
 
 <div id="install"></div>
 
-First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/xlite-dev/ffpa-attn) from source:
+First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source:
 
 ```bash
 # First, install the prebuilt package from PyPI
 pip3 install -U ffpa-attn # CUDA 13.0+, PyTorch 2.11+
 # Or, build ffpa-attn from source, just follow the cmds
-git clone https://github.com/xlite-dev/ffpa-attn.git
+git clone https://github.com/vipshop/ffpa-attn.git
 # Then, build the wheel package (Triton + CuTeDSL backends)
 cd ffpa-attn && pip3 install -e . --no-build-isolation
 # Optional: install ffpa-attn w/ CUDA backend (forward only)
@@ -206,13 +206,13 @@ print(f"dV vs SDPA dV max_abs_err={(dv - v_ref.grad).abs().max().item():.4e}")
 
 We extend FlashAttention to support large headdim ($D>256$) via **fine-grained tiling** at the **MMA** level for $QK^\top$ and $PV$ matrix multiplication. Two orthogonal $O(D)$ bottlenecks — SRAM footprint and register pressure — are broken by **Split-D** and **TiledMMA<4,2,1>** respectively.
 
-[**Split-D**](https://github.com/xlite-dev/ffpa-attn/tree/main/csrc/cuffpa/cute/sm_120/split_d.cuh): The tiling of the $D$ axis breaks the SRAM bottleneck. A persist-D layout keeps $Q$ resident in SRAM at $O(D)$ ($D{=}512 \Rightarrow 192\text{KB} > 99\text{KB}$ per-CTA limit on sm_8x/sm_120). Split-D chunks the $D$ axis, keeping SRAM fixed at $B_r \times 16$ (with $B_r=B_c$) for Q, K and V, yielding constant SRAM complexity $O(B_r \times 16) \approx O(1)$.
+[**Split-D**](https://github.com/vipshop/ffpa-attn/tree/main/csrc/cuffpa/cute/sm_120/split_d.cuh): The tiling of the $D$ axis breaks the SRAM bottleneck. A persist-D layout keeps $Q$ resident in SRAM at $O(D)$ ($D{=}512 \Rightarrow 192\text{KB} > 99\text{KB}$ per-CTA limit on sm_8x/sm_120). Split-D chunks the $D$ axis, keeping SRAM fixed at $B_r \times 16$ (with $B_r=B_c$) for Q, K and V, yielding constant SRAM complexity $O(B_r \times 16) \approx O(1)$.
 
 <div align='center'>
   <img src="./assets/split-d.png" width="750px">
 </div>
 
-[**TiledMMA**](https://github.com/xlite-dev/ffpa-attn/tree/main/csrc/cuffpa/cute/sm_120/split_d_m4n2.cuh): The **M4N2** layout breaks the register bottleneck. The $QK^\top$ has $N{=}B_c$ (fixed, independent of $D$), so its acc is $O(1)$; the $PV$ GEMM instead has $N{=}D$, so the $O$ acc costs $D/(2{\cdot}N_w)$ regs/thread. **M8N1** (FA-2 style, $N_w{=}1$) $\Rightarrow O(D/2)$: at $D{=}512$ this already reaches 256 regs/thread, over the 255 architectural limit and spilling. Splitting $N$ to **M4N2** (FA-1 style, $N_w{=}2$) halves it to $O(D/4)$, keeping $D{=}1024$ just feasible (256 regs/thread).
+[**TiledMMA**](https://github.com/vipshop/ffpa-attn/tree/main/csrc/cuffpa/cute/sm_120/split_d_m4n2.cuh): The **M4N2** layout breaks the register bottleneck. The $QK^\top$ has $N{=}B_c$ (fixed, independent of $D$), so its acc is $O(1)$; the $PV$ GEMM instead has $N{=}D$, so the $O$ acc costs $D/(2{\cdot}N_w)$ regs/thread. **M8N1** (FA-2 style, $N_w{=}1$) $\Rightarrow O(D/2)$: at $D{=}512$ this already reaches 256 regs/thread, over the 255 architectural limit and spilling. Splitting $N$ to **M4N2** (FA-1 style, $N_w{=}2$) halves it to $O(D/4)$, keeping $D{=}1024$ just feasible (256 regs/thread).
 
 <div align='center'>
   <img src="./assets/mma.png" width="800px">
@@ -223,7 +223,7 @@ We extend FlashAttention to support large headdim ($D>256$) via **fine-grained t
 
 ## Benchmark
 
-Runnable benchmark are provided under [`bench`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench). The performance benchmarks for the NVIDIA L20 (**Ada**), NVIDIA Geforce RTX 5090 (**Blackwell**), NVIDIA H800 PCIE (**Hopper**), NVIDIA H200 SXM (**Hopper**, **CuTeDSL** backend, up to **513-535** TFLOPS!) with large headdims can be found at [`bench`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench).
+Runnable benchmark are provided under [`bench`](https://github.com/vipshop/ffpa-attn/tree/main/bench). The performance benchmarks for the NVIDIA L20 (**Ada**), NVIDIA Geforce RTX 5090 (**Blackwell**), NVIDIA H800 PCIE (**Hopper**), NVIDIA H200 SXM (**Hopper**, **CuTeDSL** backend, up to **513-535** TFLOPS!) with large headdims can be found at [`bench`](https://github.com/vipshop/ffpa-attn/tree/main/bench).
 
 <div align='center'>
   <img src='./assets/perf/ffpa_speedup_nvidia-l20_B1_H32_N8192_D320_T.png' width='350px'>
@@ -238,7 +238,7 @@ Runnable benchmark are provided under [`bench`](https://github.com/xlite-dev/ffp
 
 ## Backends
 
-FFPA supports multiple backends for the forward and backward pass, including: [`SDPA`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench/) (baseline), [`CUDA`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench/) (forward only), [`Triton`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench/), and [`CuTe-DSL`](https://github.com/xlite-dev/ffpa-attn/tree/main/bench/). The `CuTe-DSL` backend is currently in early stage and has some constraints, but it can achieve up to `535` TFLOPS on H200! Stay tuned for future updates.
+FFPA supports multiple backends for the forward and backward pass, including: [`SDPA`](https://github.com/vipshop/ffpa-attn/tree/main/bench/) (baseline), [`CUDA`](https://github.com/vipshop/ffpa-attn/tree/main/bench/) (forward only), [`Triton`](https://github.com/vipshop/ffpa-attn/tree/main/bench/), and [`CuTe-DSL`](https://github.com/vipshop/ffpa-attn/tree/main/bench/). The `CuTe-DSL` backend is currently in early stage and has some constraints, but it can achieve up to `535` TFLOPS on H200! Stay tuned for future updates.
 
 <div align='center' markdown="1">
 
@@ -265,7 +265,7 @@ How to use different backends for your own scenario? Users can simply pass the B
 
 ## Persistent Autotune
 
-Generate device-specific tuned configs for production deployment (currently, [`Triton`](https://ffpa-attn.readthedocs.io/en/latest/user_guide/autotune/) only), avoiding per-process autotune cost. The generated JSON is saved under [configs](https://github.com/xlite-dev/ffpa-attn/tree/main/src/ffpa_attn/triton/configs) dir and automatically loaded when runtime autotune is disabled (the default). See the docs of [Triton Autotune](https://ffpa-attn.readthedocs.io/en/latest/user_guide/autotune/) for details.
+Generate device-specific tuned configs for production deployment (currently, [`Triton`](https://ffpa-attn.readthedocs.io/en/latest/user_guide/autotune/) only), avoiding per-process autotune cost. The generated JSON is saved under [configs](https://github.com/vipshop/ffpa-attn/tree/main/src/ffpa_attn/triton/configs) dir and automatically loaded when runtime autotune is disabled (the default). See the docs of [Triton Autotune](https://ffpa-attn.readthedocs.io/en/latest/user_guide/autotune/) for details.
 
 ```bash
 python -m ffpa_attn.autotune --mode max --full-tasks --overwrite # 1 GPU

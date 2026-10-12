@@ -3,8 +3,8 @@ site_description: FFPA — Yet another Faster Flash Prefill Attention for large 
 site_url: https://ffpa-attn.readthedocs.io
 site_author: FFPA-Attn Team
 
-repo_url: https://github.com/xlite-dev/ffpa-attn
-repo_name: xlite-dev/ffpa-attn
+repo_url: https://github.com/vipshop/ffpa-attn
+repo_name: vipshop/ffpa-attn
 edit_uri: edit/main/docs/
 
 theme:
@@ -99,4 +99,4 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/xlite-dev/ffpa-attn
+      link: https://github.com/vipshop/ffpa-attn

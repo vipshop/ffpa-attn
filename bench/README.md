@@ -32,7 +32,7 @@ python setup.py install
 Then, build FFPA Attention with FP8/FP4 support from source:
 
 ```bash
-git clone https://github.com/xlite-dev/ffpa-attn.git
+git clone https://github.com/vipshop/ffpa-attn.git
 cd ffpa-attn && git submodule update --init --recursive --force --progress --jobs 4
 # Optional: install ffpa-attn w/ CUDA backend (forward only)
 # ext all: build all kernels, include fp8/fp4 attention kernels

@@ -67,9 +67,9 @@ all = [
 
 [project.urls]
 
-Repository = "https://github.com/xlite-dev/ffpa-attn"
-Homepage = "https://github.com/xlite-dev/ffpa-attn"
-GitHub = "https://github.com/xlite-dev/ffpa-attn"
+Repository = "https://github.com/vipshop/ffpa-attn"
+Homepage = "https://github.com/vipshop/ffpa-attn"
+GitHub = "https://github.com/vipshop/ffpa-attn"
 Documentation = "https://ffpa-attn.readthedocs.io"
 
 [build-system]
