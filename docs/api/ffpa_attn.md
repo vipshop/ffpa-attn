@@ -1,8 +1,12 @@
 # API Reference
 
+## Functions
+
 ::: ffpa_attn.ffpa_attn_func
 
 ::: ffpa_attn.ffpa_attn_varlen_func
+
+::: ffpa_attn.is_nhd_zero_copy_input
 
 ## Backend Configuration
 

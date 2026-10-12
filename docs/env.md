@@ -1,6 +1,6 @@
 # Configurable Environment Variables
 
-This document summarizes all configurable environment variables in **ffpa-attn**, which control the kernel build (target SM list, headdim coverage, ccache shim) and the runtime kernel selection knobs (MMA accumulator dtype, SMEM swizzle, prefetch / persist policies, launch grid layout). Most runtime knobs are **boolean integers** parsed from `0` / `1`.
+This document summarizes all configurable environment variables in **ffpa-attn**, which control the kernel build (extension selection, target SM list, headdim coverage, quantized-kernel windows, ccache shim) and the runtime knobs (backend gating / SDPA fallback, MMA accumulator dtype, SMEM swizzle, prefetch / persist policies, launch grid layout, persistent tuned configs). Most knobs are **boolean integers** parsed from `0` / `1`.
 
 ## Build-time environment variables
 
@@ -9,11 +9,21 @@ These are read once during `pip install .` / `python setup.py build_ext` and dec
 - <span style="color:#c77dff;">FFPA_BUILD_ARCH</span>, default `""` (current device SM), Comma/semicolon/space separated list of target CUDA SM architectures. Accepts numeric SMs (e.g. `"80,89,90"`) or aliases (`maxwell`, `pascal`, `volta`, `turing`, `ampere`, `ada`, `hopper`, `blackwell`, `blackwell_geforce`). When empty, falls back to the currently visible CUDA device's compute capability.
 - <span style="color:#c77dff;">ENABLE_FFPA_CUDA_IMPL</span>, default `False (0)`, Build the optional native CUDA forward extension (`ffpa_attn._C`). When unset, the package builds in pure Python / Triton-only mode and large-D forward defaults to the Triton backend. Native CUDA backward is no longer generated; use Triton or SDPA backward.
 - <span style="color:#c77dff;">FFPA_SKIP_CUDA_EXT</span>, default `False (0)`, Force-skip the CUDA extension build even if `ENABLE_FFPA_CUDA_IMPL=1` is set. Used by ReadTheDocs and the `check-mkdocs` GitHub workflow where no nvcc is available; mkdocstrings can still import `ffpa_attn` to extract docstrings.
+- <span style="color:#c77dff;">ENABLE_FFPA_TMA_EXT</span>, default `False (0)`, Compile the TMA-based kernel families (native TMA for sm90+, CuTe TMA fp16/fp8/fp4 for sm120). `tools/build_fast.sh --ext all` sets it; it is force-disabled when every target arch is sm<90, and the custom fp8 sm_89 family covers that case instead.
+- <span style="color:#c77dff;">ENABLE_FFPA_CUTE_EXT</span>, default `False (0)`, Compile the CuTe C++ kernel extension (CuTe fp16 families on sm120/sm80). Needs `ENABLE_FFPA_TMA_EXT=1` for the TMA-gated parts.
+- <span style="color:#c77dff;">ENABLE_FFPA_FP8_SM89_EXT</span>, default `False (0)`, Compile the TMA-free fp8 sm_89 kernel family (persist-D `D<=224`, split-D `224<D<=512` with `ENABLE_FFPA_QUANT_SPLIT_D=1`). `tools/build_fast.sh` turns it on automatically when every target arch is sm<90 (L20 / 4090); requires `ENABLE_FFPA_CUTE_EXT=1`.
+- <span style="color:#c77dff;">ENABLE_FFPA_QUANT_SPLIT_D</span>, default `False (0)`, Compile the split-D / M4N2 quantized attention kernels (fp8 and fp4). Off by default: `--ext all` builds a **persist-only** quantized family (fp8 `D<=224`, fp4 `64<=D<=256`), because large-D quantized attention has no speedup window over the bf16 family (PC-19 decision). Calls past the persist window raise with this env name; debug builds (`ENABLE_FFPA_BUILD_DEBUG=fp8`/`fp4`) imply it.
+- <span style="color:#c77dff;">ENABLE_FFPA_F16_ACC</span>, default `False (0)`, Compile the fp16-input / fp16-MMA-acc kernels (`CUDABackend(acc="f16")`). Roughly doubles the fp16 translation-unit count; when disabled the dispatch raises a clear `rebuild with ENABLE_FFPA_F16_ACC=1` error.
+- <span style="color:#c77dff;">ENABLE_FFPA_CUDA_INPUT_FP16</span>, default `False (0)`, Compile the fp16-input CUDA kernels. Default builds are **bf16-input-only** (halves the forward TU count); fp16 queries then raise a "rebuild with `ENABLE_FFPA_CUDA_INPUT_FP16=1`" error from the Python layer.
+- <span style="color:#c77dff;">ENABLE_FFPA_CUDA_MASK_FP32</span>, default `False (0)`, Compile the fp32-`attn_mask` variant translation units. Default builds keep fp16/bf16 masks only; fp32 masks are downcast to `query.dtype` by the Python layer (numerically equivalent, keeps every bias plan mode reachable).
 - <span style="color:#c77dff;">FFPA_NVCC_THREADS</span>, default `4`, nvcc intra-TU parallelism (`--threads N`). With the per-headdim TU split, the outer `MAX_JOBS` already drives many nvcc processes in parallel, so keeping `--threads` small avoids oversubscription. Set to `1` to disable intra-TU threading entirely; larger values only help when `MAX_JOBS` is small.
 - <span style="color:#c77dff;">FFPA_PTXAS_VERBOSE</span>, default `False (0)`, Emit ptxas verbose info (register / SMEM usage). Off by default because it produces tens of MB of log output; enable only for tuning.
 - <span style="color:#c77dff;">FFPA_DEV_HEADDIMS</span>, default `""`, Development-time headdim subset override. Comma/space separated list of headdims (e.g. `"256,512"`) that replaces the full generated set for fast iteration. Empty (default) means use the full set decided by `ENABLE_FFPA_ALL_HEADDIM`.
 - <span style="color:#c77dff;">FFPA_BUILD_STAGES</span>, default `"2,3"`, Explicit build stage subset with the highest priority. Comma separated list of stages (e.g. `"2,3"`) or `"all"` (= stages `1..FFPA_BUILD_MAX_STAGES`). Priority chain: `FFPA_BUILD_STAGES` > `ENABLE_FFPA_ALL_STAGES` (legacy, honored only when the former is unset) > default `"2,3"`. Note that **stage 1 is no longer built by default**; requesting an unbuilt stage at runtime maps to the nearest built stage instead of always falling back to stage 1 (e.g. with the default `"2,3"`, a requested stage of 1 maps to 2 and 4 maps to 3). Set `FFPA_BUILD_STAGES=all` (or `ENABLE_FFPA_ALL_STAGES=1`) to restore the previous full build. Exposed as `tools/build_fast.sh --stages <csv|all>`.
+- <span style="color:#c77dff;">FFPA_BUILD_MAX_STAGES</span>, default `4`, Upper bound of the cp.async pipeline stages generated at build time (stages `1..N`). `FFPA_BUILD_STAGES=all` expands to this range. Values above 4 rarely pay off.
 - <span style="color:#c77dff;">ENABLE_FFPA_ALL_STAGES</span>, legacy build-time switch, honored only when `FFPA_BUILD_STAGES` is unset (see above). When explicitly set, the old semantics apply: `1` generates kernels for all multi-stage variants (stages `1..FFPA_BUILD_MAX_STAGES`); `0` generates only stages `1~2`. When neither variable is set, the default stage set is `"2,3"`. Reducing the stage set shortens build time at the cost of fewer schedule choices at runtime.
+- <span style="color:#c77dff;">FFPA_NVCC_DEFINES</span>, default `""`, Comma-separated extra `-D` defines injected into every nvcc invocation (debug / profiling pass-through, e.g. `FFPA_NVCC_DEFINES=MY_FLAG=1`).
+- <span style="color:#c77dff;">FFPA_LINEINFO</span>, default `0`, When `1`, add `-lineinfo` to nvcc so profilers (NCU / NSys) can map SASS to source. Slightly slows compilation and grows the binary.
 - <span style="color:#c77dff;">ENABLE_FFPA_BUILD_DEBUG</span>, default `""`, Compile per-family debug dispatch knobs (e.g. `FFPA_FP8_FORCE_KERNEL`, `FFPA_DROPOUT_BITMAP_DISABLE`, `FFPA_FP4_PAD_TORCH`). Comma separated subset of `fp16,fp8,fp4` or `all`; each selected family expands to `-DENABLE_FFPA_<FAM>_BUILD_DEBUG` for nvcc. Empty (default) strips every debug getenv branch from the build, which also removes the `FFPA_FP8_FORCE_KERNEL` dual split-D template instantiation (a major fp8 compile-time cost). Note: `FFPA_BIAS_TILE_DISABLE` lives in a shared helper, so it becomes active for **all** families whenever any one family's debug macro is enabled. Exposed as `tools/build_fast.sh --debug-ext <csv|all|none>`.
 - <span style="color:#c77dff;">ENABLE_FFPA_ALL_HEADDIM</span>, default `False (0)`, When `1`, headdims range from `64` to `1024` with step `64` (`range(64, 1024, 64)`); when `0`, headdims fall back to the fixed default set `64,128,192,256,320,512` (same as `build_fast.sh --headdim default`). Only effective on the bare `setup.py`/`pip` path; `build_fast.sh` always exports an explicit `FFPA_DEV_HEADDIMS` (which takes priority).
 - <span style="color:#c77dff;">MAX_JOBS</span>, default `min(nproc, 32)` via `tools/build_fast.sh`, Outer build parallelism passed to setuptools. The fast-build wrapper auto-caps at 32; for plain `python setup.py build_ext`, set it explicitly (e.g. `MAX_JOBS=32`).
@@ -51,9 +61,44 @@ ENABLE_FFPA_TMA_EXT=1 FFPA_EDITABLE=1 MAX_JOBS=32 bash tools/build_fast.sh
 
 ## Runtime kernel-selection environment variables
 
-These are read by `env.py` and gate which generated kernel template is dispatched at import / call time. All are booleans (`0` / `1`) unless noted.
+These are read at import / call time and gate which generated kernel
+template is dispatched. Most are booleans (`0` / `1`) unless noted.
+
+### Backend gating (small-D / fallback)
+
+- <span style="color:#c77dff;">FFPA_CUDA_ALLOW_SMALL_D</span>, default `False (0)`, When set to `1`, the CUDA backend is allowed to run small headdims (`D<=256`) instead of falling back to SDPA. Required for `bench --cuda-impl fp8/fp4 --D 64/128` and for small-D fp8/fp4 deployment.
+- <span style="color:#c77dff;">FFPA_TRITON_ALLOW_SMALL_D</span>, default `False (0)`, Same gate for the Triton backend.
+- <span style="color:#c77dff;">FFPA_CUTE_ALLOW_SMALL_D</span>, default `False (0)`, Same gate for the CuTeDSL backend.
+- <span style="color:#c77dff;">FFPA_FORCE_NO_SDPA_FALLBACK</span>, default `False (0)`, Test/dev escape hatch: when set (`!= ""` and `!= "0"`), `FFPAAttnMeta.fallback` never reroutes to SDPA, so tests assert the selected backend's real kernel path.
+
+### Logging
+
+- <span style="color:#c77dff;">FFPA_LOGGER_LEVEL</span>, default `INFO`, Logger level for `ffpa_attn` (e.g. `DEBUG`). At `DEBUG` the persistent-tuned-config lookup logs each cache-hit kernel + launch config once per process (`debug_once`).
+
+### Persistent tuned configs (Triton)
 
 - <span style="color:#c77dff;">FFPA_SKIP_PERSISIT_TUNED_CONFIG</span>, default `False (0)`, When set to `1`, `lookup_persistent_config()` always returns `None` even if a device JSON exists and matches. This is useful for A/B benchmarking the persistent tuned-config path against the built-in fallback launch defaults without changing call sites.
+- <span style="color:#c77dff;">FFPA_TUNED_CONFIG_DIR</span>, default `""` (package `src/ffpa_attn/triton/configs`), Directory to load persistent tuned configs from, e.g. a smoke-test output dir.
+- <span style="color:#c77dff;">FFPA_AUTOTUNE_MAX_CONFIGS</span>, default `0` (unlimited), Cap the number of shapes the autotune generator tunes, for fast development smoke tests.
+
+### Backend-specific behavior
+
+- <span style="color:#c77dff;">FFPA_FP8_SM89_FORCE</span>, default `False (0)`, Force the fp8 sm_89 (cp.async) kernel family even on sm120+. The equivalent per-call switch is `CUDABackend(force_fp8_sm89=True)`; both simply bypass the automatic `major < 12` selection.
+- <span style="color:#c77dff;">FFPA_SM89_PERSIST_KVCFG</span>, default `"64,1"`, fp8 sm_89 persist-D kernel geometry `"kBc,stages"` (kBc in `{64,128}`, stages in `{1,2,3}`). The default `64,1` keeps a 16KB smem footprint so two CTAs stay resident per SM.
+- <span style="color:#c77dff;">FFPA_CUTE_SM80_FWD_USE_PERSIST_Q</span>, default `False (0)`, CuTeDSL sm80 forward: prefer the persist-Q variant.
+- <span style="color:#c77dff;">FFPA_TRITON_BWD_FUSE_DKDVDQ</span>, default `False (0)`, Triton backward: fuse dK/dV/dQ into one kernel (`atomic_add`-based) when the shape allows; off by default (the non-fused path avoids atomics).
+
+### Debug-build-only dispatch switches
+
+These exist only in builds with the matching `ENABLE_FFPA_BUILD_DEBUG`
+family compiled (see the build-time section); see the
+[FP8 / FP4 guide](user_guide/quantized.md#debug-a-b-switches) for usage notes.
+
+- <span style="color:#c77dff;">FFPA_FP8_FORCE_KERNEL</span> (`split_d` / `m4n2`), force one fp8 split-D family for A/B (`224 < D <= 1024`).
+- <span style="color:#c77dff;">FFPA_FP8_PQUANT_PER_ROW</span>, per-row P quantization (full-scale; mutually exclusive with lazy rescale).
+- <span style="color:#c77dff;">FFPA_FP4_PAD_TORCH</span>, materialize the fp4 head-dim pad with torch instead of the fused path.
+- <span style="color:#c77dff;">FFPA_BIAS_TILE_DISABLE</span> / <span style="color:#c77dff;">FFPA_BIAS_TILE_KEEP</span> / <span style="color:#c77dff;">FFPA_BIAS_ROWVEC_DISABLE</span>, attn_bias IO-path A/B switches (tile modes / row-vector inline loads).
+- <span style="color:#c77dff;">FFPA_DROPOUT_BITMAP_DISABLE</span>, disable the fp16 dropout smem-bitmap path (fall back to inline Philox).
 
 ### MMA accumulator dtype
 
@@ -85,9 +130,10 @@ These are read by `env.py` and gate which generated kernel template is dispatche
 
 ## Key notes
 
-1. **Boolean parsing**: all `ENABLE_FFPA_*` and `FFPA_PTXAS_VERBOSE` are parsed from integer values: `1` = `True` (enabled), `0` = `False` (disabled). Exceptions taking string values: `ENABLE_FFPA_BUILD_DEBUG` (family csv), `FFPA_BUILD_ARCH`, `FFPA_DEV_HEADDIMS`, `FFPA_BUILD_STAGES`.
-2. **Build-time vs. runtime separation**: `FFPA_BUILD_STAGES`, `ENABLE_FFPA_ALL_STAGES`, `ENABLE_FFPA_ALL_HEADDIM` and `ENABLE_FFPA_BUILD_DEBUG` decide which TUs/branches are generated at build time — changing them requires rebuilding (`FFPA_CLEAN=1 bash tools/build_fast.sh`). All other `ENABLE_FFPA_*` knobs are read at runtime and can be toggled without rebuilding. The debug `FFPA_*` getenv switches (e.g. `FFPA_FP8_FORCE_KERNEL`) only exist in builds with the matching `ENABLE_FFPA_BUILD_DEBUG` family.
+1. **Boolean parsing**: `ENABLE_FFPA_*` booleans and `FFPA_PTXAS_VERBOSE` are parsed from integer values: `1` = `True` (enabled), `0` = `False` (disabled). Exceptions taking string values: `FFPA_BUILD_ARCH`, `FFPA_DEV_HEADDIMS`, `FFPA_BUILD_STAGES`, `FFPA_NVCC_DEFINES`, `FFPA_SM89_PERSIST_KVCFG`, `ENABLE_FFPA_BUILD_DEBUG` (family csv).
+2. **Build-time vs. runtime separation**: the CUDA extension selection (`ENABLE_FFPA_CUDA_IMPL`, `ENABLE_FFPA_TMA_EXT`, `ENABLE_FFPA_CUTE_EXT`, `ENABLE_FFPA_FP8_SM89_EXT`, `ENABLE_FFPA_QUANT_SPLIT_D`, `ENABLE_FFPA_F16_ACC`, `ENABLE_FFPA_CUDA_INPUT_FP16`, `ENABLE_FFPA_CUDA_MASK_FP32`), the stage/headdim/debug sets (`FFPA_BUILD_STAGES`, `FFPA_BUILD_MAX_STAGES`, `ENABLE_FFPA_ALL_STAGES`, `ENABLE_FFPA_ALL_HEADDIM`, `ENABLE_FFPA_BUILD_DEBUG`) and the native-kernel tuning knobs below (`ENABLE_FFPA_PREFETCH_QKV` … `ENABLE_FFPA_LAUNCH_GRID_DNHB`) are read at **build time** — changing them requires rebuilding (`FFPA_CLEAN=1 bash tools/build_fast.sh`). The debug `FFPA_*` getenv switches (e.g. `FFPA_FP8_FORCE_KERNEL`) only exist in builds with the matching `ENABLE_FFPA_BUILD_DEBUG` family. Truly runtime-only knobs: the backend gating, logger, persistent-config and backend-specific groups above.
 3. **Default build mode**: source builds are Triton-only unless `ENABLE_FFPA_CUDA_IMPL=1` is set. `FFPA_SKIP_CUDA_EXT=1` is now only an override that force-disables CUDA extension builds even when the CUDA build flags are enabled.
-4. **Default arch inference**: when `FFPA_BUILD_ARCH` is unset and `ENABLE_FFPA_CUDA_IMPL=1`, `setup.py` queries the currently visible CUDA device's compute capability. On CI / RTD runners with no GPU, either keep the default Triton-only build or explicitly set `FFPA_SKIP_CUDA_EXT=1`.
-5. **MMA Acc combinations**: `ENABLE_FFPA_FORCE_QK_F16` and `ENABLE_FFPA_FORCE_PV_F16` are mutually exclusive options for the FFPA Acc-F32 kernels — enable at most one to choose the mixed-precision split.
-6. **Recommended for tuning**: enable `FFPA_PTXAS_VERBOSE=1` (build-time) and start from the defaults; toggle one runtime knob at a time and measure with `bench/bench_ffpa_fwd.py` to attribute the speedup or regression.
+4. **Default build trimming**: CUDA source builds are bf16-input-only, carry no fp32-mask variants, no fp16 MMA-acc kernels and no quantized split-D families unless the corresponding flags above are set.
+5. **Default arch inference**: when `FFPA_BUILD_ARCH` is unset and `ENABLE_FFPA_CUDA_IMPL=1`, `setup.py` queries the currently visible CUDA device's compute capability. On CI / RTD runners with no GPU, either keep the default Triton-only build or explicitly set `FFPA_SKIP_CUDA_EXT=1`.
+6. **MMA Acc combinations**: `ENABLE_FFPA_FORCE_QK_F16` and `ENABLE_FFPA_FORCE_PV_F16` are mutually exclusive options for the FFPA Acc-F32 kernels — enable at most one to choose the mixed-precision split.
+7. **Recommended for tuning**: enable `FFPA_PTXAS_VERBOSE=1` (build-time) and start from the defaults; toggle one runtime knob at a time and measure with `python -m ffpa_attn.bench` to attribute the speedup or regression.

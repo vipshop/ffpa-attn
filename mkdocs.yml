@@ -49,10 +49,15 @@ theme:
 
 nav:
   - Home: index.md
-  - Bench: bench/README.md
-  - Env: env.md
   - User Guide:
+      - Backends Overview: user_guide/backends/overview.md
+      - CUDA Backend: user_guide/backends/cuda.md
+      - Triton Backend: user_guide/backends/triton.md
+      - CuTe-DSL Backend: user_guide/backends/cutedsl.md
+      - FP8 / FP4 Attention: user_guide/quantized.md
       - Triton Autotune: user_guide/autotune.md
+  - Bench: bench/README.md
+  - Env Vars: env.md
   - Developer Guide:
       - Pre-commit Hook: developer_guide/pre-commit.md
   - API Reference: api/ffpa_attn.md
@@ -95,6 +100,12 @@ markdown_extensions:
   - pymdownx.emoji
   - pymdownx.tilde
   - pymdownx.details
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 extra:
   social:
