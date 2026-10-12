@@ -22,6 +22,9 @@ try:
   CUDA_FP8_SM89_AVAILABLE = bool(
     getattr(_cuda_ext, "CUDA_FP8_SM89_AVAILABLE", False)
   )
+  CUDA_QUANT_SPLIT_D_AVAILABLE = bool(
+    getattr(_cuda_ext, "CUDA_QUANT_SPLIT_D_AVAILABLE", False)
+  )
   CUDA_BWD_AVAILABLE = False
   _CUDA_IMPORT_ERROR = None
 except Exception as exc:
@@ -34,6 +37,7 @@ except Exception as exc:
   CUDA_TMA_AVAILABLE = False
   CUDA_CUTE_TMA_AVAILABLE = False
   CUDA_FP8_SM89_AVAILABLE = False
+  CUDA_QUANT_SPLIT_D_AVAILABLE = False
   CUDA_BWD_AVAILABLE = False
   _CUDA_IMPORT_ERROR = exc
 

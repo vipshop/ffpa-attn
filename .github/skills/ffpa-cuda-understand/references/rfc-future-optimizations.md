@@ -394,6 +394,7 @@
   - 机制归因：fp8 的带宽减半收益被两个 MMA 之间的量化计算链（fixed p_scale online softmax rescale 链 + P 逐元素 fp32→e4m3 量化 + pscale_rowsum_mma 额外 MMA + inst_buf 两级累加吸收）吃掉——瓶颈在 softmax/发射链非带宽（PC-16/17 既有 NCU 结论在 split-D 域同样成立）；且 PV accumulator 是 f16 atom（e4m3×e4m3→f16），Ada/Blackwell 上相对 bf16→f32 无 2x 发射吞吐。sm120 靠 TMA+WS producer/consumer 把计算链藏进装载延迟（大 N +30%），sm89 cp.async + 1 CTA/SM 藏不住（-50%）。
   - **结论与边界**：大 D（>224）量化 kernel 停止投入——含 Phase 3 m4n2 sm89（取消）、以及未来任何"大 D 量化提速"提案（除非先证明 vs 自家 bf16 有收益的可行结构，如能藏住计算链的新几何）。**不受影响的存量**：sm89 persist-D fp8（D≤224，与 Sage2 平价、vs sm120 同配置一致，是精度/功能选项且有既有用户）、sm120 fp8 全家族（已落地维护）；量化路径在 fp8-native 模型链路（输入本就是 fp8）仍是功能必需品，只是不再作为 bf16 的提速手段向大 D 推广。
   - 遗留提示：FC-10（sm90/sm100 fp8）若重启，persist-D 小 D 优先，大 D split/m4n2 同受本条约束。
+  - 执行落地（同日）：新构建开关 **`ENABLE_FFPA_QUANT_SPLIT_D`**（默认 0）——`--ext all` 默认只编 persist-D 量化窗口（fp8 D≤224、fp4 64≤D≤256 %64），fp8/fp4 的 split-D/m4n2 family/variant/preprocess TU 全部跳过（env.py 过滤 + router 调用 guard 越窗 raise 带 rebuild 提示，两处必须同步——family TU 是唯一定义点、router 是纯引用层，只过滤 TU 不加 guard 会产生缺符号链接错误）；`.so` 507→334MB（-34%）。显式 env 开恢复全家族；`ENABLE_FFPA_BUILD_DEBUG` 覆盖 fp8/fp4 时自动蕴含（env.py `enable_quant_split_d`）；能力标志 `CUDA_QUANT_SPLIT_D_AVAILABLE` 供测试门控（fp8/fp4/sm89 测试文件的 split 用例 skipif）。fp16 家族不受影响。
 
 ## 实施路线图（基建优先，承上启下）
 

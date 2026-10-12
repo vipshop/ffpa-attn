@@ -681,6 +681,11 @@ bash ./build.sh --arch sm_120f --headdim <list> --ext all --jobs 64
 # debug 构建开关 --debug-ext <fp16|fp8|fp4 csv|all>（默认 none）按需使用：只开正在调试的家族；
 # 盲目 --debug-ext all 编译大幅变慢（全家族 debug getenv 分支 + fp8 FORCE_KERNEL 双 split-D
 # 实例化，实测 ~3.6x：1320s vs 默认 367s）；上述 debug env 开关仅在对应家族 debug 构建中存在
+# 量化解 split-D 默认不编译（2026-10-12 起，PC-19）：--ext all 只编 persist-D 量化窗口
+#   （fp8 D≤224、fp4 64≤D≤256 %64），fp8/fp4 的 split-D/m4n2 family+variant+preprocess TU 全部跳过，
+#   .so 体积 507→334MB（-34%）；越窗调用 router raise 带 "rebuild with ENABLE_FFPA_QUANT_SPLIT_D=1"。
+#   显式 `ENABLE_FFPA_QUANT_SPLIT_D=1` 恢复全家族；debug-ext fp8/fp4 自动蕴含（FORCE_KERNEL A/B 需要）。
+#   能力标志 `ffpa_attn.cuda.CUDA_QUANT_SPLIT_D_AVAILABLE`（测试门控用）；fp16 家族不受影响。
 # 默认编译集裁剪（2026-09-08 起生效）：bf16-only 输入 + 无 f=1（fp32 mask）variant TU，
 #   冷构建 770s/451 TU → 525s/326 TU（-32%）；需 fp16 输入/fp32 mask 变体时加
 #   ENABLE_FFPA_CUDA_INPUT_FP16=1 / ENABLE_FFPA_CUDA_MASK_FP32=1（见 §10.1）

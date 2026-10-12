@@ -25,6 +25,7 @@ from ffpa_attn import ffpa_attn_func
 from ffpa_attn.cuda import (
   CUDA_FP8_SM89_AVAILABLE,
   CUDA_INPUT_FP16_AVAILABLE,
+  CUDA_QUANT_SPLIT_D_AVAILABLE,
   set_cuda_backend_impl,
   CudaBackendImpl,
 )
@@ -40,6 +41,13 @@ pytestmark = [
     not CUDA_FP8_SM89_AVAILABLE,
     reason="fp8 sm89 family not compiled; rebuild with the fp8 ext "
     "(ENABLE_FFPA_TMA_EXT or ENABLE_FFPA_FP8_SM89_EXT)",
+  ),
+  pytest.mark.skipif(
+    not CUDA_QUANT_SPLIT_D_AVAILABLE,
+    reason="the whole file exercises the sm89 split-D window (D>224), "
+    "which is opt-in; rebuild with ENABLE_FFPA_QUANT_SPLIT_D=1 "
+    "(persist-D sm89 coverage: ffpa_attn.bench --backend cuda "
+    "--cuda-impl fp8_sm_89 --dtype bf16 --D 128)",
   ),
 ]
 
