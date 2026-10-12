@@ -276,14 +276,18 @@ void launch_ffpa_attn_fwd_template(
 #ifdef ENABLE_FFPA_TMA_EXT
         ffpa::ffpa_fwd_fp8<kDataType, kHeadDim, kStage>(p);
 #else
-        // sm_89-only builds instantiate fp8 family TUs for D<=224 only;
-        // guard the call so D>224 entry TUs emit no undefined refs.
-        if constexpr (kHeadDim <= 224) {
+        // sm_89-only builds instantiate fp8 family TUs for the sm89
+        // family window only (persist-D D<=224, split-D 224<D<=512 with
+        // D%64==0); guard the call so out-of-window entry TUs emit no
+        // undefined refs.
+        if constexpr (kHeadDim <= 224 ||
+                      (kHeadDim % 64 == 0 && kHeadDim <= 512)) {
           ffpa::ffpa_fwd_fp8<kDataType, kHeadDim, kStage>(p);
         } else {
           TORCH_CHECK(false,
-                      "ffpa_attn: fp8 beyond the sm89 persist-D family "
-                      "(D<=224) requires ENABLE_FFPA_TMA_EXT");
+                      "ffpa_attn: fp8 beyond the sm89 family (persist-D "
+                      "D<=224, split-D 224<D<=512 with D%64==0) requires "
+                      "ENABLE_FFPA_TMA_EXT");
         }
 #endif
       } else if (prop->major == 9 || prop->major == 10) {

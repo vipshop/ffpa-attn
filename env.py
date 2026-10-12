@@ -90,11 +90,11 @@ class ENV(object):
   # at runtime on TMA-capable devices. Requires CUDA Toolkit >= 13.0.
   ENABLE_FFPA_TMA_EXT = bool(int(os.environ.get("ENABLE_FFPA_TMA_EXT", 0)))
 
-  # Enable the TMA-free CuTe fp8 sm_89 kernel family (persist_d, D<=224)
-  # for sm_89-only builds where ENABLE_FFPA_TMA_EXT must stay off (TMA
-  # needs sm>=90). Opt-in, default off; tools/build_fast.sh flips it on
-  # automatically when every target arch is sm<90. Requires
-  # ENABLE_FFPA_CUTE_EXT=1 to activate the kernel path.
+  # Enable the TMA-free CuTe fp8 sm_89 kernel family (persist_d D<=224,
+  # split_d 224<D<=512) for sm_89-only builds where ENABLE_FFPA_TMA_EXT
+  # must stay off (TMA needs sm>=90). Opt-in, default off;
+  # tools/build_fast.sh flips it on automatically when every target arch
+  # is sm<90. Requires ENABLE_FFPA_CUTE_EXT=1 to activate the kernel path.
   ENABLE_FFPA_FP8_SM89_EXT = bool(
     int(os.environ.get("ENABLE_FFPA_FP8_SM89_EXT", 0))
   )
@@ -695,7 +695,8 @@ with r in {0, 1}. See `_fp16_impl_variants` in `env.py`.
       and fp16f32 share one __half TU (duplicate explicit instantiation
       would be a compile error).
     - ``fwd_<dtype>_cute_fp8_hdim{d}_s{s}.cu`` (ENABLE_FFPA_TMA_EXT; or
-      ENABLE_FFPA_FP8_SM89_EXT, D<=224 only): cute_fp8 family TU
+      ENABLE_FFPA_FP8_SM89_EXT, sm89 family window only: D<=224 or
+      224<D<=512 with D%64==0): cute_fp8 family TU
       (``dispatch/cute_fp8.cuh``): explicit instantiation of
       ``ffpa_fwd_fp8``.
     - ``fwd_<dtype>_cute_fp4_hdim{d}.cu`` (ENABLE_FFPA_TMA_EXT): cute_fp4
@@ -1129,10 +1130,11 @@ with r in {0, 1}. See `_fp16_impl_variants` in `env.py`.
             cls._render_fp4_family_tu(t_in, d, stages),
           )
         elif cls.enable_fp8_sm89_ext():
-          # sm_89-only build: the fp8 sm89 kernel family covers D<=224
-          # only (dispatch raises above); skip the D>224 family TUs so
-          # e.g. --headdim all does not compile dead raise-only TUs.
-          if d <= 224:
+          # sm_89-only build: the fp8 sm89 kernel family covers persist-D
+          # (D<=224) and split-D (224<D<=512, D%64==0); skip the other
+          # headdims so e.g. --headdim all does not compile dead
+          # raise-only TUs.
+          if d <= 224 or (d % 64 == 0 and d <= 512):
             for s in stages:
               yield (
                 f"fwd_{token}_cute_fp8_hdim{d}_s{s}.cu",
