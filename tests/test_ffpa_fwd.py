@@ -293,9 +293,7 @@ def test_ffpa_attn_func_triton_small_d_default_uses_triton(monkeypatch):
     return orig(*args, **kwargs)
 
   def _unexpected_flash(*args, **kwargs):
-    raise AssertionError(
-      "small-D triton should bypass aten flash by default"
-    )
+    raise AssertionError("small-D triton should bypass aten flash by default")
 
   monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)
   monkeypatch.setattr(
@@ -329,9 +327,7 @@ def test_ffpa_attn_func_cuda_small_d_default_uses_cuda(monkeypatch):
     return orig(*args, **kwargs)
 
   def _unexpected_flash(*args, **kwargs):
-    raise AssertionError(
-      "small-D cuda should bypass aten flash by default"
-    )
+    raise AssertionError("small-D cuda should bypass aten flash by default")
 
   monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)
   monkeypatch.setattr(
@@ -956,8 +952,7 @@ def test_ffpa_attn_func_small_d_honors_output_buffer():
 
 
 @pytest.mark.skip(
-  reason=
-  "Nq=32 (<512) routes to the SDPA fallback, bypassing FFPAAttnFunc"
+  reason="Nq=32 (<512) routes to the SDPA fallback, bypassing FFPAAttnFunc"
 )
 def test_ffpa_attn_func_small_d_backward_consumes_saved_flash_state(
   monkeypatch

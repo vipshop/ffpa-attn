@@ -147,9 +147,7 @@ def test_cutedsl_small_head_dim_routes_through_ffpaattnfunc(monkeypatch):
     return orig(*args, **kwargs)
 
   def _unexpected_flash(*args, **kwargs):
-    raise AssertionError(
-      "small-D cutedsl should bypass aten flash by default"
-    )
+    raise AssertionError("small-D cutedsl should bypass aten flash by default")
 
   monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)
   monkeypatch.setattr(
