@@ -28,21 +28,27 @@
 #   full  --headdim default (64,128,192,256,320,512), ~80 MB. The published
 #         wheel, which has to carry a release version; the channel is appended
 #         as its local version unless one is given.
+#   pure  --ext none, no channel in the version, a single environment: the
+#         portable pure-Python wheel that PyPI serves (py3-none-any, so the
+#         Python version of the building env does not matter). Its version has
+#         to be a plain release, and neither nvcc nor ccache is needed.
 #
 # Usage:
 #   bash tools/build_releases.sh                                     # mini, py312
 #   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
 #   FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" bash tools/build_releases.sh
-#   FFPA_RELEASE_CHANNEL=cu14 FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
+#   FFPA_RELEASE_CHANNEL=cu13 FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
 #
 # Environment:
-#   FFPA_RELEASE_PROFILE    mini | full                    (default mini)
-#   FFPA_RELEASE_ENVS       conda envs, space separated    (default py312)
+#   FFPA_RELEASE_PROFILE    mini | full | pure             (default mini)
+#   FFPA_RELEASE_ENVS       conda envs, space separated    (default py312;
+#                           profile pure builds one wheel, so it takes the
+#                           first entry only)
 #   FFPA_RELEASE_VERSION    version to build; empty -> derived from git
 #   FFPA_RELEASE_DIST       where the wheels land          (default dist/)
 #   FFPA_RELEASE_WORK_ROOT  build workspaces               (default .tmp/release_build)
 #   FFPA_RELEASE_ARCH       FFPA_BUILD_ARCH                (default 89,120f)
-#   FFPA_RELEASE_EXT        build_fast.sh --ext value      (default all)
+#   FFPA_RELEASE_EXT        build_fast.sh --ext value      (default all; pure: none)
 #   FFPA_RELEASE_HEADDIM    build_fast.sh --headdim value  (default: per profile)
 #   FFPA_RELEASE_JOBS       MAX_JOBS for build_fast.sh     (default: its own default)
 #   FFPA_RELEASE_NAME      distribution name                  (default ffpa-attn)
@@ -62,13 +68,19 @@ PACKAGE_NAME="${FFPA_RELEASE_NAME:-ffpa-attn}"
 CHANNEL="${FFPA_RELEASE_CHANNEL:-cu13}"
 WHEEL_STEM="${PACKAGE_NAME//-/_}"
 PROFILE="${FFPA_RELEASE_PROFILE:-mini}"
+# The pure-Python profile: no extension to compile, no channel in the version,
+# and a py3-none-any wheel, so a single environment is all it needs.
+PURE=0
+[[ "$PROFILE" == "pure" ]] && PURE=1
 ENV_LIST_RAW="${FFPA_RELEASE_ENVS:-py312}"
 RELEASE_VERSION="${FFPA_RELEASE_VERSION:-}"
 # 120f, not 120: the CuTe fp8/fp4 families use instructions (.kind::f8f6f4,
 # setmaxnreg) that the plain sm_120 target rejects at ptxas time. Family code
 # runs on every sm_120 device, which is what the release is for.
 ARCH="${FFPA_RELEASE_ARCH:-89,120f}"
-EXT="${FFPA_RELEASE_EXT:-all}"
+# EXT is resolved by profile_ext() below, next to the headdim set: the pure
+# profile has to refuse an --ext that asks for a compiled family, and that
+# check needs fail().
 DIST_DIR="${FFPA_RELEASE_DIST:-$REPO_DIR/dist}"
 WORK_ROOT="${FFPA_RELEASE_WORK_ROOT:-$REPO_DIR/.tmp/release_build}"
 DRY_RUN="${FFPA_RELEASE_DRY_RUN:-0}"
@@ -76,6 +88,10 @@ INCREMENTAL="${FFPA_RELEASE_INCREMENTAL:-0}"
 ALLOW_UNCOMMITTED="${FFPA_RELEASE_ALLOW_UNCOMMITTED:-0}"
 
 read -r -a RELEASE_ENVS <<< "$ENV_LIST_RAW"
+if [[ "$PURE" == "1" && ${#RELEASE_ENVS[@]} -gt 1 ]]; then
+  echo "[build_releases] profile pure builds one py3-none-any wheel; taking ${RELEASE_ENVS[0]} out of '${ENV_LIST_RAW}'" >&2
+  RELEASE_ENVS=("${RELEASE_ENVS[0]}")
+fi
 
 # Everything that ends up inside the wheel: the extension and the package it
 # ships, plus the metadata sources. Tools, docs and this script are not in it,
@@ -95,7 +111,21 @@ profile_headdim() {
   case "$PROFILE" in
     mini) echo "${FFPA_RELEASE_HEADDIM:-128}" ;;
     full) echo "${FFPA_RELEASE_HEADDIM:-default}" ;;
-    *) fail "FFPA_RELEASE_PROFILE must be mini or full, got '$PROFILE'" ;;
+    # Nothing is compiled, so there is no headdim set to pick.
+    pure) echo "" ;;
+    *) fail "FFPA_RELEASE_PROFILE must be mini, full or pure, got '$PROFILE'" ;;
+  esac
+}
+
+profile_ext() {
+  case "$PROFILE" in
+    pure)
+      # Nothing is compiled, so an --ext that asks for a family contradicts the
+      # profile; refusing it here beats failing later, after a long build.
+      [[ -z "${FFPA_RELEASE_EXT:-}" || "${FFPA_RELEASE_EXT}" == "none" ]] || fail \
+        "profile pure builds no extension, so FFPA_RELEASE_EXT has to be 'none', got '${FFPA_RELEASE_EXT}'"
+      echo "none" ;;
+    *) echo "${FFPA_RELEASE_EXT:-all}" ;;
   esac
 }
 
@@ -131,7 +161,9 @@ check_env() {
     || fail "conda env $env is missing build dependencies (packaging/setuptools_scm/torch/wheel)"
 
   # The toolkit major is what the extension links against: a CUDA 12 wheel
-  # installs cleanly and fails to import next to a cu13 torch.
+  # installs cleanly and fails to import next to a cu13 torch. The pure-Python
+  # profile compiles nothing and so does not care about a toolkit at all.
+  [[ "$PURE" == "1" ]] && return 0
   nvcc="${CUDA_HOME:-/usr/local/cuda}/bin/nvcc"
   [[ -x "$nvcc" ]] || fail "nvcc not found at $nvcc; set CUDA_HOME"
   toolkit="$("$nvcc" --version | sed -n 's/.*release \([0-9]*\)\..*/\1/p' | head -1)"
@@ -155,15 +187,21 @@ local_scheme='no-local-version'))" \
 resolve_release_version() {
   local env="$1" version uncommitted
   version="${RELEASE_VERSION:-$(resolve_version "$env")}"
+  # A pure build is the PyPI release: the plain version, never a channel's
+  # local segment -- the local version is exactly what makes the CUDA wheel a
+  # different artefact from it.
+  if [[ "$PURE" == "1" && "$version" == *"+"* ]]; then
+    fail "profile pure builds the plain release version; '$version' carries a local segment"
+  fi
   [[ "$version" =~ ^[0-9]+(\.[0-9]+)*([._a-zA-Z0-9]+)?$ ]] \
     || fail "unexpected version '$version'"
 
   if [[ "$PROFILE" == "mini" ]]; then
     # The mini wheel exists to exercise the pipeline, and tools/publish_index.sh
     # refuses a version that is not a release. Deriving the version keeps that
-    # property; pinning one is what the full profile is for.
+    # property; pinning one is what the release profiles are for.
     [[ -z "$RELEASE_VERSION" ]] || fail \
-      "profile mini derives its own .devN version; FFPA_RELEASE_VERSION belongs to profile full"
+      "profile mini derives its own .devN version; FFPA_RELEASE_VERSION belongs to profiles full and pure"
     echo "$version"
     return 0
   fi
@@ -179,12 +217,17 @@ resolve_release_version() {
     echo "$uncommitted" >&2
   else
     [[ -z "$uncommitted" ]] || fail \
-      "profile full builds from committed sources; commit these first (or set
+      "profile $PROFILE builds from committed sources; commit these first (or set
 FFPA_RELEASE_ALLOW_UNCOMMITTED=1 to accept an artefact that matches no commit):
 $uncommitted"
   fi
   [[ "$version" != *".dev"* ]] || fail \
-    "profile full needs a release version, got '$version'. Tag the commit, or pass FFPA_RELEASE_VERSION=<x.y.z>"
+    "profile $PROFILE needs a release version, got '$version'. Tag the commit, or pass FFPA_RELEASE_VERSION=<x.y.z>"
+  if [[ "$PURE" == "1" ]]; then
+    # PyPI's release: the plain version, without the channel's local segment.
+    echo "$version"
+    return 0
+  fi
   # The channel rides along as the local version unless one was given, so that
   # `pip install ffpa-attn --index-url .../whl/cu13/` is unambiguous next to the
   # same release on PyPI.
@@ -212,12 +255,10 @@ prepare_workspace() {
 }
 
 build_wheel() {
-  local env="$1" workspace="$2" raw_dir="$3" headdim="$4"
+  local env="$1" workspace="$2" raw_dir="$3"
   local -a command=(
     bash tools/build_fast.sh
-    --arch "$ARCH"
-    --ext "$EXT"
-    --headdim "$headdim"
+    "${BUILD_FLAGS[@]}"
     --no-editable
     wheel . --no-build-isolation --no-deps -w "$raw_dir"
   )
@@ -258,20 +299,55 @@ retag_wheel() {
     || fail "$env: expected exactly one published wheel in $DIST_DIR, got ${#published[@]}"
 }
 
-HEADDIM="$(profile_headdim)"
+publish_pure_wheel() {
+  local env="$1" raw_dir="$2" wheels wheel
+  shopt -s nullglob
+  wheels=("$raw_dir"/"$WHEEL_STEM"-"$VERSION"-py3-none-any.whl)
+  shopt -u nullglob
+  [[ ${#wheels[@]} -eq 1 ]] || fail \
+    "$env: expected exactly one py3-none-any wheel for $VERSION in $raw_dir, got ${#wheels[@]}"
+  wheel="${wheels[0]}"
+  # A stray .so would still install as py3-none-any and only fail at import
+  # time on a machine without this build's CUDA: check the archive itself.
+  conda run -n "$env" python -c "
+import sys, zipfile
+names = zipfile.ZipFile(sys.argv[1]).namelist()
+sys.exit(1 if any(name.endswith('.so') for name in names) else 0)
+" "$wheel" || fail "$env: $wheel contains a .so; it is not a pure-Python wheel"
 
-echo "[build_releases] package=$PACKAGE_NAME profile=$PROFILE arch=$ARCH ext=$EXT headdim=$HEADDIM"
-echo "[build_releases] envs=$ENV_LIST_RAW dist=$DIST_DIR work_root=$WORK_ROOT"
+  mkdir -p "$DIST_DIR"
+  rm -f "$DIST_DIR"/"$WHEEL_STEM"-"$VERSION"-py3-none-any.whl
+  cp -f "$wheel" "$DIST_DIR/"
+}
+
+HEADDIM="$(profile_headdim)"
+EXT="$(profile_ext)"
+
+# What goes into the wheel: the pure profile compiles nothing, so it has no
+# architecture and no headdim set to hand to build_fast.sh.
+if [[ "$PURE" == "1" ]]; then
+  BUILD_FLAGS=(--ext "$EXT")
+else
+  BUILD_FLAGS=(--arch "$ARCH" --ext "$EXT" --headdim "$HEADDIM")
+fi
+
+if [[ "$PURE" == "1" ]]; then
+  echo "[build_releases] package=$PACKAGE_NAME profile=$PROFILE ext=$EXT"
+else
+  echo "[build_releases] package=$PACKAGE_NAME profile=$PROFILE arch=$ARCH ext=$EXT headdim=$HEADDIM"
+fi
+echo "[build_releases] envs=${RELEASE_ENVS[*]// /,} dist=$DIST_DIR work_root=$WORK_ROOT"
 
 require_command conda
-require_command ccache
+# ccache is the nvcc shim; a build that compiles nothing does not need it.
+[[ "$PURE" == "1" ]] || require_command ccache
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "[build_releases] dry run: build_fast.sh would resolve the flags above to:"
   (
     cd "$REPO_DIR"
     FFPA_EDITABLE=0 bash tools/build_fast.sh \
-      --arch "$ARCH" --ext "$EXT" --headdim "$HEADDIM" --no-editable \
+      "${BUILD_FLAGS[@]}" --no-editable \
       wheel . --no-build-isolation --no-deps -w "$WORK_ROOT/<env>/raw" --dry-run
   )
   echo "[build_releases] dry run: no workspace prepared, no wheel built"
@@ -299,16 +375,25 @@ for env in "${RELEASE_ENVS[@]}"; do
   fi
   mkdir -p "$raw_dir"
   prepare_workspace "$env" "$workspace"
-  build_wheel "$env" "$workspace" "$raw_dir" "$HEADDIM"
-  retag_wheel "$env" "$raw_dir" "$(wheel_python_tag "$env")"
+  build_wheel "$env" "$workspace" "$raw_dir"
+  if [[ "$PURE" == "1" ]]; then
+    publish_pure_wheel "$env" "$raw_dir"
+  else
+    retag_wheel "$env" "$raw_dir" "$(wheel_python_tag "$env")"
+  fi
 done
 
-echo "[build_releases] built ${#RELEASE_ENVS[@]} environment(s): ${ENV_LIST_RAW// /,}"
+echo "[build_releases] built ${#RELEASE_ENVS[@]} environment(s): ${RELEASE_ENVS[*]// /,}"
 ls -lh "$DIST_DIR"/"$WHEEL_STEM"-"$VERSION"-*.whl
 
 if [[ "$PROFILE" == "mini" ]]; then
   echo "[build_releases] mini wheels validate the pipeline only: they carry a .devN version"
   echo "[build_releases] and tools/publish_index.sh refuses them, so there is nothing to publish"
+  exit 0
+fi
+if [[ "$PURE" == "1" ]]; then
+  echo "[build_releases] upload the pure-Python wheel to PyPI:"
+  echo "  python -m twine upload \"$DIST_DIR\"/$WHEEL_STEM-$VERSION-*.whl"
   exit 0
 fi
 echo "[build_releases] publish them with:"
