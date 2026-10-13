@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="pypi:repository-version" content="1.0">
-    <title>ffpa-attn-cu13 wheel index</title>
+    <title>ffpa-attn wheel index</title>
   </head>
   <body>
-    <h1>ffpa-attn-cu13 wheel index</h1>
+    <h1>ffpa-attn wheel index</h1>
     <p>
       PEP 503 index of the FFPA CUDA-extension wheels. The extension is compiled for
       the CUDA 13 toolkit, so pick the CUDA your torch was built against
       (<code>python -c "import torch; print(torch.version.cuda)"</code>):
     </p>
-    <pre>pip install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/</pre>
+    <pre>pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/</pre>
     <p>
       <strong>Install torch first.</strong> These wheels are built and tested against
       <code>torch==2.11.0+cu130</code>; nothing here carries torch of its own, so pip only
@@ -21,15 +21,18 @@
     </p>
     <p>
       <code>--index-url</code> on its own is complete for a machine that already has the
-      runtime dependencies. Anything missing sends pip looking for it here, where only
-      <code>ffpa-attn-cu13</code> exists -- add <code>--extra-index-url https://pypi.org/simple</code>
-      for those. That cannot shadow this package (ffpa-attn-cu13 is not on PyPI), but it can move
-      your torch, which is the reason for the paragraph above.
+      runtime dependencies. Anything missing sends pip looking for it only here -- add
+      <code>--extra-index-url https://pypi.org/simple</code> for those, and mind the
+      paragraph above, because PyPI is also where a torch that is not the cu130 build
+      would come from.
     </p>
     <p>
-      Do not install PyPI's <code>ffpa-attn</code> next to this package: both own the
-      <code>ffpa_attn/</code> directory. This distribution installs the same Python package
-      with the CUDA extension compiled in, so it replaces the pure-Python one.
+      <code>ffpa-attn</code> is the same distribution PyPI lists, built here with the CUDA
+      extension compiled in and tagged with the local version <code>+cu13</code>. That
+      suffix is what keeps the two apart: it sorts above the plain release, so pip takes
+      this build whenever both indexes are candidates, and a pure-Python wheel of the same
+      release that is already installed no longer satisfies the requirement unchanged.
+      Installing this replaces it -- one distribution, one <code>ffpa_attn/</code> directory.
     </p>
     <p>
       Platform tags: <code>manylinux_2_38_x86_64</code> -- the tag reflects the GLIBC
@@ -37,11 +40,11 @@
     </p>
     <h2><a href="https://vipshop.github.io/ffpa-attn/whl/cu13/">https://vipshop.github.io/ffpa-attn/whl/cu13/</a></h2>
     <ul>
-      <li><code>ffpa_attn_cu13-0.2.4-cp310-cp310-manylinux_2_38_x86_64.whl</code></li>
-      <li><code>ffpa_attn_cu13-0.2.4-cp311-cp311-manylinux_2_38_x86_64.whl</code></li>
-      <li><code>ffpa_attn_cu13-0.2.4-cp312-cp312-manylinux_2_38_x86_64.whl</code></li>
-      <li><code>ffpa_attn_cu13-0.2.4-cp313-cp313-manylinux_2_38_x86_64.whl</code></li>
-      <li><code>ffpa_attn_cu13-0.2.4-cp314-cp314-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.4+cu13-cp310-cp310-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.4+cu13-cp311-cp311-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.4+cu13-cp312-cp312-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.4+cu13-cp313-cp313-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.4+cu13-cp314-cp314-manylinux_2_38_x86_64.whl</code></li>
     </ul>
   </body>
 </html>
