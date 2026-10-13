@@ -18,23 +18,32 @@
 # for one version carrying another version's assets -- cannot be published.
 #
 # Usage:
-#   bash tools/publish_index.sh --tag ffpa-attn-cu13-v0.2.5 --wheels dist/*.whl \
-#     --site-repo /workspace/dev/vipshop/DefTruth.github.io
+#   # the canonical index: the project's Pages branch, whose URL already carries
+#   # the repository name, so the branch root holds whl/cu13/ directly
+#   bash tools/publish_index.sh --tag ffpa-attn-cu13-v0.2.4 \
+#     --wheels dist/ffpa_attn_cu13-0.2.4-*.whl --site-repo <gh-pages worktree>
+#   # the mirror on a personal site, under a directory of its own
+#   FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
+#     bash tools/publish_index.sh --tag ... --wheels ... --site-repo <that checkout>
+#   # no upload, just the HTML, against a local server
 #   bash tools/publish_index.sh --tag t --wheels dist/*.whl --site-repo DIR --index-only \
-#     --release-url http://127.0.0.1:8765/ffpa-attn/whl/cu13/assets   # no upload, local check
+#     --release-url http://127.0.0.1:8765/whl/cu13/assets
 #
 # Environment:
-#   FFPA_RELEASE_REPO   repository holding the release assets (default DefTruth/DefTruth.github.io)
-#   FFPA_SITE_URL       where the site is served            (default https://deftruth.github.io)
-#   FFPA_INDEX_PREFIX   path under the site root            (default ffpa-attn)
+#   FFPA_RELEASE_REPO   repository holding the release assets (default vipshop/ffpa-attn)
+#   FFPA_SITE_URL       where the site is served            (default https://vipshop.github.io/ffpa-attn)
+#   FFPA_INDEX_PREFIX   path under the site root            (default empty, for the
+#                       project Pages branch above; set it for a mirror)
 #   FFPA_INDEX_CHANNEL  CUDA channel sub-index              (default cu13)
 #   FFPA_FORCE_UPLOAD   1 -> replace an existing asset whose size differs
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RELEASE_REPO="${FFPA_RELEASE_REPO:-DefTruth/DefTruth.github.io}"
-SITE_URL="${FFPA_SITE_URL:-https://deftruth.github.io}"
-PREFIX="${FFPA_INDEX_PREFIX:-ffpa-attn}"
+RELEASE_REPO="${FFPA_RELEASE_REPO:-vipshop/ffpa-attn}"
+SITE_URL="${FFPA_SITE_URL:-https://vipshop.github.io/ffpa-attn}"
+# `-` rather than `:-`: an empty prefix is a real choice -- it is what the project
+# Pages branch uses, where the repository name already supplies the URL path.
+PREFIX="${FFPA_INDEX_PREFIX-}"
 CHANNEL="${FFPA_INDEX_CHANNEL:-cu13}"
 FORCE_UPLOAD="${FFPA_FORCE_UPLOAD:-0}"
 
@@ -131,8 +140,12 @@ ensure_release() {
     return 0
   fi
   echo "[publish_index] creating release $TAG in $RELEASE_REPO"
+  # These wheels are assets of another distribution, not a release of the
+  # project itself: --latest=false keeps them from taking over the "Latest"
+  # badge of the repository's own releases.
   gh release create "$TAG" --repo "$RELEASE_REPO" --title "ffpa-attn-cu13 $(basename "$TAG")" \
-    --notes "ffpa-attn-cu13 wheels. Install with:
+    --latest=false \
+    --notes "CUDA-extension wheels of the \`ffpa-attn-cu13\` distribution. Install with:
     pip install ffpa-attn-cu13 --index-url $SITE_URL/$PREFIX/whl/$CHANNEL/"
 }
 

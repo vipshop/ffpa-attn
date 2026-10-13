@@ -27,8 +27,13 @@ Stdlib only, so it runs wherever the release script runs.
 
 Usage::
 
-    tools/make_index.py --out <site-repo> --prefix ffpa-attn \\
-        --release-url https://github.com/DefTruth/DefTruth.github.io/releases/download/ffpa-attn-cu13-v0.2.5 \\
+    # the project Pages branch: an empty prefix, because the repository name
+    # already supplies the ffpa-attn/ path
+    tools/make_index.py --out <gh-pages worktree> --prefix "" \\
+        --release-url https://github.com/vipshop/ffpa-attn/releases/download/ffpa-attn-cu13-v0.2.4 \\
+        --site-url https://vipshop.github.io/ffpa-attn dist/*.whl
+    # a mirror on another site, under a directory of its own
+    tools/make_index.py --out <other site> --prefix ffpa-attn \\
         --site-url https://deftruth.github.io dist/*.whl
 """
 
@@ -344,7 +349,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
   prefix_dir = args.out / args.prefix
-  index_base = f"{args.site_url.rstrip('/')}/{args.prefix}/whl"
+  # An empty prefix is a site whose root already carries the project name, which
+  # is the case for a project Pages branch (vipshop.github.io/ffpa-attn/).
+  index_base = "/".join(
+    part for part in (args.site_url.rstrip("/"), args.prefix.strip("/"), "whl")
+    if part
+  )
   project_page = prefix_dir / "whl" / args.channel / NORMALIZED / "index.html"
   links = read_existing(project_page)
   before = len(links)

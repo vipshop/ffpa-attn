@@ -72,6 +72,14 @@ def _parse_args() -> argparse.Namespace:
     help="Release version to bake into src/ffpa_attn/_version.py; the build "
     "overwrites it with the same value when SETUPTOOLS_SCM_PRETEND_VERSION is set.",
   )
+  parser.add_argument(
+    "--incremental",
+    action="store_true",
+    help="Refresh an existing workspace instead of recreating it, so the "
+    "compiled objects under build/ survive: the sources are re-copied, the "
+    "build then relinks and repackages the wheel. Use it for a rebuild that "
+    "changes only the version or other metadata.",
+  )
   return parser.parse_args()
 
 
@@ -135,10 +143,16 @@ def main() -> None:
       f"release_workspace: no pyproject.toml under {source_root}"
     )
 
-  _assert_removable(source_root, workspace)
-  if workspace.exists():
-    shutil.rmtree(workspace)
-  (workspace / "tools").mkdir(parents=True)
+  if args.incremental:
+    if not workspace.is_dir():
+      raise SystemExit(
+        f"release_workspace: --incremental needs an existing workspace, {workspace} is not one"
+      )
+  else:
+    _assert_removable(source_root, workspace)
+    if workspace.exists():
+      shutil.rmtree(workspace)
+  (workspace / "tools").mkdir(parents=True, exist_ok=True)
 
   _rewrite_pyproject(
     source_root / "pyproject.toml", workspace / "pyproject.toml", package_name
@@ -150,8 +164,20 @@ def main() -> None:
   for name in _LINKED_TOOLS:
     _symlink(workspace / "tools" / name, source_root / "tools" / name)
 
-  shutil.copytree(source_root / "src", workspace / "src", ignore=_IGNORE_SRC)
-  shutil.copytree(source_root / "csrc", workspace / "csrc", ignore=_IGNORE_CSRC)
+  # copytree keeps mtimes, which is what lets an incremental build skip the
+  # translation units whose sources did not move.
+  shutil.copytree(
+    source_root / "src",
+    workspace / "src",
+    ignore=_IGNORE_SRC,
+    dirs_exist_ok=True
+  )
+  shutil.copytree(
+    source_root / "csrc",
+    workspace / "csrc",
+    ignore=_IGNORE_CSRC,
+    dirs_exist_ok=True
+  )
 
   if args.version:
     _write_version_file(workspace / "src" / "ffpa_attn", args.version)

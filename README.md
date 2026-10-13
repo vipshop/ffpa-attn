@@ -44,7 +44,7 @@ First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-at
 pip3 install -U ffpa-attn # Triton + CuTe-DSL backends; CUDA 13.0+, PyTorch 2.11+
 # Or, install the prebuilt wheel WITH the CUDA extension (forward only):
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then
-pip3 install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
+pip3 install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 # Or, build ffpa-attn from source, just follow the cmds
 git clone https://github.com/vipshop/ffpa-attn.git
 # Then, build the wheel package (Triton + CuTe-DSL backends)

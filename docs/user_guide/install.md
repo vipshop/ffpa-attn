@@ -6,13 +6,15 @@ package:
 | Distribution | Contents | Where it comes from |
 |---|---|---|
 | `ffpa-attn` | Python sources, Triton and CuTe-DSL backends | [PyPI](https://pypi.org/project/ffpa-attn/) |
-| `ffpa-attn-cu13` | the same sources **with the CUDA extension compiled in** (`D > 256`, forward only) | [the FFPA wheel index](https://deftruth.github.io/ffpa-attn/whl/cu13/) |
+| `ffpa-attn-cu13` | the same sources **with the CUDA extension compiled in** (`D > 256`, forward only) | [the FFPA wheel index](https://vipshop.github.io/ffpa-attn/whl/cu13/) |
 
-The CUDA wheel is roughly 1 GiB: it carries every headdim in the release set for
-two architectures. PyPI caps a file at 100 MB and a git repository accepts less,
-so these wheels are published as GitHub Release assets and served through a
-static PEP 503 index. Install the one you need -- the two distributions are not
-meant to be installed side by side, because both own `ffpa_attn/`.
+The CUDA wheel carries the whole release set of headdims compiled for two
+architectures: around 80 MB today, and it grows with that set. It is therefore
+published as GitHub Release assets served through a static PEP 503 index --
+close enough to PyPI's 100 MB per-file limit that publishing there would be a
+bet, and the CUDA channel is meant to move independently of the pure-Python
+package anyway. Install the one you need: the two distributions are not meant to
+be installed side by side, because both own `ffpa_attn/`.
 
 ## Requirements
 
@@ -30,14 +32,14 @@ meant to be installed side by side, because both own `ffpa_attn/`.
 
 ```bash
 python -c "import torch; print(torch.__version__, torch.version.cuda)"  # expect ...+cu130 13.0
-pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
+pip install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 ```
 
 Install torch **first**, from the PyTorch index you normally use:
 
 ```bash
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu130
-pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
+pip install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 ```
 
 > [!NOTE]
@@ -54,7 +56,7 @@ pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/
 > replace your torch with it):
 >
 > ```bash
-> pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/ \
+> pip install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
 >   --extra-index-url https://pypi.org/simple "torch==2.11.0"
 > ```
 
@@ -64,7 +66,7 @@ pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/
 > Uninstall one before installing the other:
 >
 > ```bash
-> pip uninstall -y ffpa-attn && pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
+> pip uninstall -y ffpa-attn && pip install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 > ```
 
 ## Verify the extension
@@ -98,9 +100,14 @@ source build. Only `--arch`, `--ext` and `--headdim` differ between profiles:
 
 ```bash
 bash tools/build_releases.sh                       # mini, py312, local only
-FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.5 FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" \
+FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" \
   bash tools/build_releases.sh                     # the published set
 ```
+
+A rebuild that changes only the version or other metadata runs with
+`FFPA_RELEASE_INCREMENTAL=1`, which keeps the compiled objects under the
+workspace's `build/` and re-links instead of recompiling (a full set takes
+seconds per environment rather than minutes).
 
 The build runs in a workspace prepared by `tools/release_workspace.py`, because
 the distribution name is a static field of `pyproject.toml` and cannot be
@@ -112,18 +119,26 @@ it with the manylinux floor its GLIBC symbols imply.
 Publish and index it:
 
 ```bash
+# the canonical index: the gh-pages branch of this repository, whose URL is
+# vipshop.github.io/ffpa-attn/, so the branch root holds whl/cu13/ itself
+git fetch origin gh-pages && git worktree add /tmp/ffpa-attn-pages gh-pages
 bash tools/publish_index.sh \
-  --tag ffpa-attn-cu13-v0.2.5 \
-  --wheels dist/ffpa_attn_cu13-0.2.5-*.whl \
-  --site-repo /path/to/DefTruth.github.io
+  --tag ffpa-attn-cu13-v0.2.4 \
+  --wheels dist/ffpa_attn_cu13-0.2.4-*.whl \
+  --site-repo /tmp/ffpa-attn-pages
+
+# a mirror under a directory of its own, on any other Pages site
+FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
+  bash tools/publish_index.sh --index-only --tag ffpa-attn-cu13-v0.2.4 \
+  --wheels dist/ffpa_attn_cu13-0.2.4-*.whl --site-repo /path/to/DefTruth.github.io
 ```
 
-It uploads the wheels as release assets of the site repository (requires
-`gh auth login`), regenerates `ffpa-attn/whl/cu13/` in the site repository, and
-pushes. The index merges into what is already published, so older versions keep
-resolving. Pre-release versions are refused: the `mini` profile's
-`0.2.5.devN` wheels exist to validate the pipeline and are missing most
-headdims, so they must never be what `pip install ffpa-attn-cu13` resolves to.
+It uploads the wheels as release assets of this repository (requires
+`gh auth login`), rewrites the index in the site work tree and pushes it. The
+index merges into what is already published, so older versions keep resolving.
+Pre-release versions are refused: the `mini` profile's `0.2.4.devN` wheels exist
+to validate the pipeline and are missing most headdims, so they must never be
+what `pip install ffpa-attn-cu13` resolves to.
 
 ## Building from source instead
 

@@ -53,6 +53,8 @@ EXT="${FFPA_RELEASE_EXT:-all}"
 DIST_DIR="${FFPA_RELEASE_DIST:-$REPO_DIR/dist}"
 WORK_ROOT="${FFPA_RELEASE_WORK_ROOT:-$REPO_DIR/.tmp/release_build}"
 DRY_RUN="${FFPA_RELEASE_DRY_RUN:-0}"
+INCREMENTAL="${FFPA_RELEASE_INCREMENTAL:-0}"
+ALLOW_UNCOMMITTED="${FFPA_RELEASE_ALLOW_UNCOMMITTED:-0}"
 
 read -r -a RELEASE_ENVS <<< "$ENV_LIST_RAW"
 
@@ -152,9 +154,16 @@ resolve_release_version() {
   # scheme drops the dirty marker before this script could see it -- so ask git
   # for the inputs that end up in the wheel instead of reading the version.
   uncommitted="$(git -C "$REPO_DIR" status --porcelain -- "${SHIPPED_INPUTS[@]}")"
-  [[ -z "$uncommitted" ]] || fail \
-    "profile full builds from committed sources; commit these first:
+  if [[ -n "$uncommitted" && "$ALLOW_UNCOMMITTED" == "1" ]]; then
+    echo "[build_releases] WARNING: building from uncommitted inputs; the wheel will not" >&2
+    echo "[build_releases] WARNING: correspond to any commit:" >&2
+    echo "$uncommitted" >&2
+  else
+    [[ -z "$uncommitted" ]] || fail \
+      "profile full builds from committed sources; commit these first (or set
+FFPA_RELEASE_ALLOW_UNCOMMITTED=1 to accept an artefact that matches no commit):
 $uncommitted"
+  fi
   [[ "$version" != *".dev"* ]] || fail \
     "profile full needs a release version, got '$version'. Tag the commit, or pass FFPA_RELEASE_VERSION=<x.y.z>"
   [[ "$version" != *"+"* ]] || fail \
@@ -163,13 +172,15 @@ $uncommitted"
 }
 
 prepare_workspace() {
-  local env="$1" workspace="$2"
+  local env="$1" workspace="$2" extra=()
+  [[ "$INCREMENTAL" == "1" ]] && extra+=(--incremental)
   echo "[build_releases] $env: preparing the release workspace"
   conda run -n "$env" python "$REPO_DIR/tools/release_workspace.py" \
     --source-root "$REPO_DIR" \
     --workspace "$workspace" \
     --package-name "$PACKAGE_NAME" \
-    --version "$VERSION"
+    --version "$VERSION" \
+    "${extra[@]+"${extra[@]}"}"
 }
 
 build_wheel() {
@@ -253,7 +264,11 @@ fi
 for env in "${RELEASE_ENVS[@]}"; do
   workspace="$WORK_ROOT/$env/workspace"
   raw_dir="$WORK_ROOT/$env/raw"
-  rm -rf "$WORK_ROOT/$env"
+  if [[ "$INCREMENTAL" == "1" ]]; then
+    echo "[build_releases] $env: reusing $workspace (only a relink and repack)"
+  else
+    rm -rf "$WORK_ROOT/$env"
+  fi
   mkdir -p "$raw_dir"
   prepare_workspace "$env" "$workspace"
   build_wheel "$env" "$workspace" "$raw_dir" "$HEADDIM"
