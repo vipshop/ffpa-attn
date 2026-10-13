@@ -40,14 +40,12 @@
 First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The CUDA extension ships under the same name from a separate index, one per CUDA toolkit -- see [Installation](./docs/user_guide/install.md):
 
 ```bash
-# The default, most portable build: pure Python, Triton + CuTe-DSL backends.
-# CUDA 13.0+, PyTorch 2.11+; no architecture or Python-version constraint
-pip3 install -U ffpa-attn
+pip3 install -U ffpa-attn # Pure Python, Triton + CuTe-DSL backends.
 # Or, the same distribution with the CUDA extension compiled in (forward only):
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then.
-# Our index holds the wheel alone, so the requirements come from PyPI
-pip3 install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
-     --extra-index-url https://pypi.org/simple
+pip3 install -U ffpa-attn \
+  --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
+  --extra-index-url https://pypi.org/simple
 ```
 
 ```bash
