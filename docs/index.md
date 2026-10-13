@@ -57,11 +57,6 @@ cd ffpa-attn && pip3 install -e . --no-build-isolation
 bash ./build.sh --arch sm_120f --ext all --headdim default
 ```
 
-Without an index, `pip3 install -U ffpa-attn` always installs the pure-Python
-build. The CUDA build is the same distribution (`ffpa-attn`, versioned
-`0.2.4+cu13`), so it replaces that build rather than living next to it -- one
-`ffpa_attn/` package either way.
-
 Then, try to accelerate the attention for large headdim with just <i><b>one-line</b></i> of code:
 
 ```python
