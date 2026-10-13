@@ -12,7 +12,7 @@
 # so a half-uploaded or replaced asset fails loudly instead of installing.
 #
 # Refuses to index a pre-release version: tools/build_releases.sh's mini profile
-# produces 0.2.5.devN wheels for pipeline validation, and those must never be
+# produces 0.2.4.devN wheels for pipeline validation, and those must never be
 # what `pip install ffpa-attn-cu13` resolves to. The version is read out of the
 # wheel filenames and has to agree with the tag, so a mismatched pair -- a tag
 # for one version carrying another version's assets -- cannot be published.
@@ -69,7 +69,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="$2"; shift 2 ;;
     --wheels)
       # Several paths, because the shell expands a glob before the script sees
-      # it: `--wheels dist/ffpa_attn_cu13-0.2.5-*.whl` arrives as many arguments.
+      # it: `--wheels dist/ffpa_attn_cu13-0.2.4-*.whl` arrives as many arguments.
       shift
       [[ $# -gt 0 ]] || fail "--wheels requires at least one path"
       while [[ $# -gt 0 && "$1" != --* ]]; do WHEELS+=("$1"); shift; done ;;
@@ -82,7 +82,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag ffpa-attn-cu13-v0.2.5"
+[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag ffpa-attn-cu13-v0.2.4"
 [[ ${#WHEELS[@]} -gt 0 ]] || fail "--wheels is required (paths or globs of the built wheels)"
 [[ -n "$SITE_REPO" ]] || fail "--site-repo is required: the working tree of $RELEASE_REPO"
 [[ -d "$SITE_REPO" ]] || fail "no such directory: $SITE_REPO"

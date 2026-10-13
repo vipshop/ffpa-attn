@@ -17,14 +17,14 @@
 #         build -> wheel -> retag -> index -> pip install path in minutes, which
 #         is what a slow upload link needs while the pipeline itself is still
 #         being worked on. Its version defaults to the setuptools-scm version,
-#         i.e. 0.2.5.devN past the last tag, so it sorts below every release and
+#         i.e. 0.2.4.devN past the last tag, so it sorts below every release and
 #         must never be written to the index.
 #   full  --headdim default (64,128,192,256,320,512), ~1 GiB. The published
 #         wheel, which has to carry a release version.
 #
 # Usage:
 #   bash tools/build_releases.sh                                     # mini, py312
-#   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.5 bash tools/build_releases.sh
+#   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
 #   FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" bash tools/build_releases.sh
 #
 # Environment:

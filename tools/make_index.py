@@ -317,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     "--release-url",
     required=True,
     help="directory URL the wheels are served from, e.g. "
-    "https://github.com/DefTruth/DefTruth.github.io/releases/download/ffpa-attn-cu13-v0.2.5",
+    "https://github.com/vipshop/ffpa-attn/releases/download/ffpa-attn-cu13-v0.2.4",
   )
   parser.add_argument(
     "--site-url",
