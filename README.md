@@ -47,11 +47,11 @@ pip3 install "ffpa-attn==0.2.4+cu13" --extra-index-url https://vipshop.github.io
 ```
 
 ```bash
-# Or, build ffpa-attn latest from source. Default: only Triton + CuTe-DSL backends.
+# Or, build the latest ffpa-attn from source. Default: only Triton + CuTe-DSL backends.
 git clone https://github.com/vipshop/ffpa-attn.git && cd ffpa-attn && pip3 install -e .
 # Optional: install ffpa-attn w/ CUDA backend (forward only); ext all: build all kernels,
-# include fp8/fp4 attention kernels; headdim default: build 64,128,192,256,320,512.
-bash ./build.sh --arch sm_120f --ext all --headdim default
+# include fp8/fp4 attention kernels; headdim <list>, e.g: 64,128,256,512.
+bash ./build.sh --arch sm_89,sm_120f --ext all --headdim 64,128,256,512
 ```
 
 Then, try to accelerate the attention for large headdim with just <i><b>one-line</b></i> of code:
