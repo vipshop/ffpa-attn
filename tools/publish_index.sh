@@ -22,7 +22,7 @@
 # Usage:
 #   # the canonical index: the project's Pages branch, whose URL already carries
 #   # the repository name, so the branch root holds whl/cu13/ directly
-#   bash tools/publish_index.sh --tag ffpa-attn-cu13-v0.2.4 \
+#   bash tools/publish_index.sh --tag v0.2.4+cu13 \
 #     --wheels 'dist/ffpa_attn-0.2.4+cu13-*.whl' --site-repo <gh-pages worktree>
 #   # the mirror on a personal site, under a directory of its own
 #   FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag ffpa-attn-cu13-v0.2.4"
+[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag v0.2.4+cu13"
 [[ ${#WHEELS[@]} -gt 0 ]] || fail "--wheels is required (paths or globs of the built wheels)"
 [[ -n "$SITE_REPO" ]] || fail "--site-repo is required: the working tree of $RELEASE_REPO"
 [[ -d "$SITE_REPO" ]] || fail "no such directory: $SITE_REPO"
@@ -118,10 +118,10 @@ build it with FFPA_RELEASE_CHANNEL=$CHANNEL"
     || fail "two versions in one publish: $VERSION and $version"
   VERSION="$version"
 done
-# The tag names the release the assets live on: the channel is in it, the local
-# version is not (a '+' in a URL path is a decoding step away from a space).
-[[ "$TAG" == "$PROJECT-$CHANNEL-v${VERSION%%+*}" ]] \
-  || fail "tag '$TAG' does not name version '$VERSION'; expected '$PROJECT-$CHANNEL-v${VERSION%%+*}'"
+# The tag names the release the assets live on, and it carries the channel the
+# way the wheel does: v0.2.4+cu13.
+[[ "$TAG" == "v${VERSION%%+*}+$CHANNEL" ]] \
+  || fail "tag '$TAG' does not name version '$VERSION'; expected 'v${VERSION%%+*}+$CHANNEL'"
 
 if [[ "$INDEX_ONLY" == "0" ]]; then
   command -v gh >/dev/null 2>&1 || fail "the gh CLI is required to upload release assets"
@@ -157,7 +157,9 @@ ensure_release() {
   # --latest=false keeps them from taking over the "Latest" badge of the
   # repository's own releases.
   local index_url="$SITE_URL/${PREFIX:+$PREFIX/}whl/$CHANNEL"
-  gh release create "$TAG" --repo "$RELEASE_REPO" --title "$PROJECT $CHANNEL ($(basename "$TAG"))" \
+  # No --title: GitHub names a release after its tag, and the tag already says
+  # everything the release holds -- v0.2.4+cu13.
+  gh release create "$TAG" --repo "$RELEASE_REPO" \
     --latest=false \
     --notes "CUDA-extension wheels of \`$PROJECT\`, built against $CHANNEL. Install with:
     pip install $PROJECT --index-url $index_url/"

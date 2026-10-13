@@ -193,9 +193,10 @@ $uncommitted"
 }
 
 release_tag() {
-  # The channel belongs in the tag, the local version does not: a tag travels
-  # through URL paths, where a '+' is one decoding step away from a space.
-  echo "${PACKAGE_NAME}-${CHANNEL}-v${VERSION%%+*}"
+  # One convention for tags and wheels: v0.2.4+cu13 -- the release version, the
+  # channel as its local part. The tag sorts next to the version it belongs to
+  # rather than after it.
+  echo "v${VERSION%%+*}+${CHANNEL}"
 }
 
 prepare_workspace() {

@@ -140,24 +140,23 @@ Publish and index it:
 # vipshop.github.io/ffpa-attn/, so the branch root holds whl/cu13/ itself
 git fetch origin gh-pages && git worktree add /tmp/ffpa-attn-pages gh-pages
 bash tools/publish_index.sh \
-  --tag ffpa-attn-cu13-v0.2.4 \
+  --tag v0.2.4+cu13 \
   --wheels dist/ffpa_attn-0.2.4+cu13-*.whl \
   --site-repo /tmp/ffpa-attn-pages
 
 # a mirror under a directory of its own, on any other Pages site
 FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
-  bash tools/publish_index.sh --index-only --tag ffpa-attn-cu13-v0.2.4 \
+  bash tools/publish_index.sh --index-only --tag v0.2.4+cu13 \
   --wheels dist/ffpa_attn-0.2.4+cu13-*.whl --site-repo /path/to/DefTruth.github.io
 ```
 
 It uploads the wheels as release assets of this repository (requires
 `gh auth login`), rewrites the index in the site work tree and pushes it. The
-tag names the channel, not the local version (`ffpa-attn-cu13-v0.2.4`), because
-a `+` in a URL path is one decoding step away from a space. The index merges
-into what is already published, so older versions keep resolving. Pre-release
-versions are refused: the `mini` profile's `0.2.4.devN` wheels exist to validate
-the pipeline and are missing most headdims, so they must never be what
-`pip install ffpa-attn` resolves to.
+tag follows the wheels' convention, release version plus channel as a local
+version: `v0.2.4+cu13`. The index merges into what is already published, so
+older versions keep resolving. Pre-release versions are refused: the `mini`
+profile's `0.2.4.devN` wheels exist to validate the pipeline and are missing most
+headdims, so they must never be what `pip install ffpa-attn` resolves to.
 
 ## Building from source instead
 

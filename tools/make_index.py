@@ -37,7 +37,7 @@ Usage::
     # the project Pages branch: an empty prefix, because the repository name
     # already supplies the ffpa-attn/ path
     tools/make_index.py --out <gh-pages worktree> --prefix "" \\
-        --release-url https://github.com/vipshop/ffpa-attn/releases/download/ffpa-attn-cu13-v0.2.4 \\
+        --release-url https://github.com/vipshop/ffpa-attn/releases/download/v0.2.4+cu13 \\
         --site-url https://vipshop.github.io/ffpa-attn dist/*.whl
     # a mirror on another site, under a directory of its own
     tools/make_index.py --out <other site> --prefix ffpa-attn \\
@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     "--release-url",
     required=True,
     help="directory URL the wheels are served from, e.g. "
-    "https://github.com/vipshop/ffpa-attn/releases/download/ffpa-attn-cu13-v0.2.4",
+    "https://github.com/vipshop/ffpa-attn/releases/download/v0.2.4+cu13",
   )
   parser.add_argument(
     "--site-url",
