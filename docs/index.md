@@ -40,23 +40,18 @@
 First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The CUDA extension ships under the same name from a separate index, one per CUDA toolkit -- see [Installation](user_guide/install.md):
 
 ```bash
-# The default, most portable build: pure Python, Triton + CuTe-DSL backends.
-# CUDA 13.0+, PyTorch 2.11+; no architecture or Python-version constraint
-pip3 install -U ffpa-attn
+pip3 install "ffpa-attn==0.2.4" # Default, pure Python, Triton + CuTe-DSL backends.
 # Or, the same distribution with the CUDA extension compiled in (forward only):
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then.
-# Our index holds the wheel alone, so the requirements come from PyPI
-pip3 install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
-  --extra-index-url https://pypi.org/simple
-# Or, build ffpa-attn from source, just follow the cmds
-git clone https://github.com/vipshop/ffpa-attn.git
-# Then, build the wheel package (Triton + CuTe-DSL backends)
-cd ffpa-attn && pip3 install -e . --no-build-isolation
-# Optional: install ffpa-attn w/ CUDA backend (forward only)
-# ext all: build all kernels, include fp8/fp4 attention kernels
-# headdim default: build 64,128,192,256,320,512; other headdims
-# (e.g. 832,1024 or 120) must be requested via --headdim <list>
-bash ./build.sh --arch sm_120f --ext all --headdim default
+pip3 install "ffpa-attn==0.2.4+cu13" --extra-index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
+```
+
+```bash
+# Or, build the latest ffpa-attn from source. Default: only Triton + CuTe-DSL backends.
+git clone https://github.com/vipshop/ffpa-attn.git && cd ffpa-attn && pip3 install -e .
+# Optional: install ffpa-attn w/ CUDA backend (forward only); ext all: build all kernels,
+# include fp8/fp4 attention kernels; headdim <list>, e.g: 64,128,256,512.
+bash ./build.sh --arch sm_89,sm_120f --ext all --headdim 64,128,256,512
 ```
 
 Then, try to accelerate the attention for large headdim with just <i><b>one-line</b></i> of code:
