@@ -37,11 +37,14 @@
 
 <a id="install"></a>
 
-First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source:
+First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The wheel with the CUDA extension compiled in is ~1 GiB and therefore published on its own index instead of PyPI, see [Installation](user_guide/install.md):
 
 ```bash
 # First, install the prebuilt package from PyPI
-pip3 install -U ffpa-attn # CUDA 13.0+, PyTorch 2.11+
+pip3 install -U ffpa-attn # Triton + CuTe-DSL backends; CUDA 13.0+, PyTorch 2.11+
+# Or, install the prebuilt wheel WITH the CUDA extension (forward only):
+# Linux x86_64, a torch built against CUDA 13 -- install torch first, then
+pip3 install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
 # Or, build ffpa-attn from source, just follow the cmds
 git clone https://github.com/vipshop/ffpa-attn.git
 # Then, build the wheel package (Triton + CuTe-DSL backends)
@@ -52,6 +55,9 @@ cd ffpa-attn && pip3 install -e . --no-build-isolation
 # (e.g. 832,1024 or 120) must be requested via --headdim <list>
 bash ./build.sh --arch sm_120f --ext all --headdim default
 ```
+
+Do not install `ffpa-attn` and `ffpa-attn-cu13` into the same environment:
+both provide the `ffpa_attn/` package.
 
 Then, try to accelerate the attention for large headdim with just <i><b>one-line</b></i> of code:
 

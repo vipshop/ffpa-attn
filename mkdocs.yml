@@ -49,6 +49,7 @@ theme:
 
 nav:
   - Home: index.md
+  - Installation: user_guide/install.md
   - User Guide:
       - Backends Overview: user_guide/backends/overview.md
       - CUDA Backend: user_guide/backends/cuda.md

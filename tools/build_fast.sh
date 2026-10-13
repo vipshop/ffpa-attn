@@ -82,8 +82,10 @@ Flags (override same-named env vars; env reference: docs/env.md):
   --dry-run            print resolved env + command, exit before side effects.
   -h, --help           show this help.
 
-Unknown args pass through to 'setup.py build_ext --inplace' or
-'pip install -e .', e.g.: bash tools/build_fast.sh bdist_wheel --verbose
+Unknown args pass through to 'setup.py build_ext --inplace', 'pip install -e .',
+or 'python -m pip wheel .' when the first of them is literally 'wheel', e.g.:
+  bash tools/build_fast.sh bdist_wheel --verbose
+  bash tools/build_fast.sh --no-editable wheel . --no-build-isolation -w dist
 EOF
   exit 0
 }
@@ -293,11 +295,25 @@ fi
 # nvcc intra-TU threads (respect --nvcc-threads/env, else env.py default 4).
 export FFPA_NVCC_THREADS="${FFPA_NVCC_THREADS:-4}"
 
+# A leading `wheel` in the pass-through args selects the pip wheel path: the
+# extension is compiled into build/lib.* and packaged, never in place, so the
+# source tree stays untouched. tools/build_releases.sh needs exactly that, since
+# it builds in a workspace whose sources are copies. The marker itself is
+# consumed here -- pip would otherwise read it as a requirement to fetch.
+WHEEL_MODE=0
+if [[ "${PASS_ARGS[0]:-}" == "wheel" ]]; then
+  WHEEL_MODE=1
+  PASS_ARGS=("${PASS_ARGS[@]:1}")
+  export FFPA_EDITABLE=0
+fi
+
 # Default: editable install.
 : "${FFPA_EDITABLE:=1}"
 
 # Resolved configuration; --dry-run exits here before any side effect.
-if [[ "${FFPA_EDITABLE}" == "1" ]]; then
+if [[ "$WHEEL_MODE" == "1" ]]; then
+  BUILD_CMD="python -m pip wheel"
+elif [[ "${FFPA_EDITABLE}" == "1" ]]; then
   BUILD_CMD="python setup.py build_ext --inplace && FFPA_SKIP_CUDA_EXT=1 python -m pip install -e . --no-build-isolation --no-deps"
 else
   BUILD_CMD="python setup.py build_ext --inplace"
@@ -374,7 +390,10 @@ if [[ "${FFPA_BUILD_IN_SHM:-0}" == "1" ]]; then
 fi
 
 T0=$(date +%s)
-if [[ "${FFPA_EDITABLE}" == "1" ]]; then
+if [[ "$WHEEL_MODE" == "1" ]]; then
+  echo "[build_fast] building a wheel with pip (no in-place extension build)"
+  python -m pip wheel ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
+elif [[ "${FFPA_EDITABLE}" == "1" ]]; then
   echo "[build_fast] step 1/2: building extension (build_ext --inplace)"
   python setup.py build_ext --inplace ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}
   echo "[build_fast] step 2/2: registering editable install (pip install -e)"
@@ -401,6 +420,9 @@ echo "[build_fast] total elapsed: $((T1-T0))s"
 #   bash tools/build_fast.sh --ptxas-verbose      # dump register/smem usage
 #   bash tools/build_fast.sh --dry-run            # resolved env + command only
 #   bash tools/build_fast.sh bdist_wheel          # pass-through to setup.py/pip
+#   bash tools/build_fast.sh wheel . --no-build-isolation -w dist
+#                                                 # pip wheel, no in-place build
+#                                                 # (tools/build_releases.sh)
 #
 # Measured on L20 (66 TUs = 25 headdims x 2 dtype + dispatch TU):
 #   baseline cold (MAX_JOBS=32, no ccache) : ~207s
