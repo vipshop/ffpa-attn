@@ -42,21 +42,20 @@ bench = [
 ]
 
 docs = [
+    # Same set as ``docs/requirements.txt``: that file is what Read the Docs
+    # and the check-mkdocs CI workflow install, this extra is for local
+    # developer installs (``pip install -e ".[docs]"``). Keep both in sync.
+    # Only the plugins actually enabled in mkdocs.yml belong here.
     # Pinning mkdocs to 1.6.1 and mkdocs-material to 9.7.1 to avoid
     # the breaking changes in mkdocs 2.0.0, which causes the CI failure
     # in the check-mkdocs workflow.
     # https://squidfunk.github.io/mkdocs-material/blog/2026/02/18/mkdocs-2.0/
     "mkdocs==1.6.1",
     "mkdocs-material==9.7.1",
-    "mkdocs-api-autonav",
     "mkdocstrings-python",
-    "mkdocs-gen-files",
-    "mkdocs-awesome-nav",
-    "mkdocs-glightbox",
-    "mkdocs-git-revision-date-localized-plugin",
-    "mkdocs-minify-plugin",
     "mkdocs-callouts",
-    "regex",
+    # mkdocstrings formats multi-line signatures with Black (or Ruff).
+    "black",
 ]
 
 all = [
