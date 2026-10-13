@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Build the ffpa-attn-cu13 release wheels, one per conda environment.
+# Build the release wheels of ffpa-attn's CUDA channel, one per conda environment.
+#
+# The distribution keeps PyPI's name and the toolkit lives in two places: the
+# index directory it is served under (whl/cu13/) and the wheel's local version
+# (0.2.4+cu13). One command therefore works across toolkits -- only the
+# --index-url changes -- and pip can still tell the CUDA build apart from the
+# pure-Python wheel of the same release.
 #
 # Every compilation switch comes from tools/build_fast.sh -- the script
 # `bash build.sh` forwards to -- so the CUDA extension of a release is compiled
@@ -19,13 +25,15 @@
 #         being worked on. Its version defaults to the setuptools-scm version,
 #         i.e. 0.2.4.devN past the last tag, so it sorts below every release and
 #         must never be written to the index.
-#   full  --headdim default (64,128,192,256,320,512), ~1 GiB. The published
-#         wheel, which has to carry a release version.
+#   full  --headdim default (64,128,192,256,320,512), ~80 MB. The published
+#         wheel, which has to carry a release version; the channel is appended
+#         as its local version unless one is given.
 #
 # Usage:
 #   bash tools/build_releases.sh                                     # mini, py312
 #   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
 #   FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" bash tools/build_releases.sh
+#   FFPA_RELEASE_CHANNEL=cu14 FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
 #
 # Environment:
 #   FFPA_RELEASE_PROFILE    mini | full                    (default mini)
@@ -37,11 +45,22 @@
 #   FFPA_RELEASE_EXT        build_fast.sh --ext value      (default all)
 #   FFPA_RELEASE_HEADDIM    build_fast.sh --headdim value  (default: per profile)
 #   FFPA_RELEASE_JOBS       MAX_JOBS for build_fast.sh     (default: its own default)
+#   FFPA_RELEASE_NAME      distribution name                  (default ffpa-attn)
+#   FFPA_RELEASE_CHANNEL   CUDA channel: the index directory and the local
+#                          version suffix                      (default cu13)
 #   FFPA_RELEASE_DRY_RUN    1 -> resolve and print, build nothing
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PACKAGE_NAME="ffpa-attn-cu13"
+# The distribution keeps PyPI's name; what distinguishes a build is the CUDA
+# toolkit, and it shows up twice: in the index directory (whl/cu13/) and in the
+# local version (+cu13). Keeping the name means a requirement does not change
+# per toolkit, and the local version is what tells pip that this wheel is not
+# the pure-Python one of the same release -- including the case where that one
+# is already installed and would otherwise satisfy the requirement unchanged.
+PACKAGE_NAME="${FFPA_RELEASE_NAME:-ffpa-attn}"
+CHANNEL="${FFPA_RELEASE_CHANNEL:-cu13}"
+WHEEL_STEM="${PACKAGE_NAME//-/_}"
 PROFILE="${FFPA_RELEASE_PROFILE:-mini}"
 ENV_LIST_RAW="${FFPA_RELEASE_ENVS:-py312}"
 RELEASE_VERSION="${FFPA_RELEASE_VERSION:-}"
@@ -166,9 +185,17 @@ $uncommitted"
   fi
   [[ "$version" != *".dev"* ]] || fail \
     "profile full needs a release version, got '$version'. Tag the commit, or pass FFPA_RELEASE_VERSION=<x.y.z>"
-  [[ "$version" != *"+"* ]] || fail \
-    "profile full refuses the local version '$version'; publish a plain version"
+  # The channel rides along as the local version unless one was given, so that
+  # `pip install ffpa-attn --index-url .../whl/cu13/` is unambiguous next to the
+  # same release on PyPI.
+  [[ "$version" == *"+"* ]] || version="${version}+${CHANNEL}"
   echo "$version"
+}
+
+release_tag() {
+  # The channel belongs in the tag, the local version does not: a tag travels
+  # through URL paths, where a '+' is one decoding step away from a space.
+  echo "${PACKAGE_NAME}-${CHANNEL}-v${VERSION%%+*}"
 }
 
 prepare_workspace() {
@@ -208,7 +235,7 @@ build_wheel() {
 retag_wheel() {
   local env="$1" raw_dir="$2" python_tag="$3" wheels
   shopt -s nullglob
-  wheels=("$raw_dir"/ffpa_attn_cu13-*-"$python_tag"-"$python_tag"-*.whl)
+  wheels=("$raw_dir"/"$WHEEL_STEM"-*-"$python_tag"-"$python_tag"-*.whl)
   shopt -u nullglob
   [[ ${#wheels[@]} -eq 1 ]] \
     || fail "$env: expected exactly one wheel for $python_tag in $raw_dir, got ${#wheels[@]}"
@@ -218,13 +245,13 @@ retag_wheel() {
   mkdir -p "$DIST_DIR"
   # A wheel for this (version, python) left by an earlier run would satisfy the
   # assertion below and could be the one that gets published.
-  rm -f "$DIST_DIR"/ffpa_attn_cu13-"$VERSION"-"$python_tag"-"$python_tag"-*.whl
+  rm -f "$DIST_DIR"/"$WHEEL_STEM"-"$VERSION"-"$python_tag"-"$python_tag"-*.whl
   conda run --no-capture-output -n "$env" python "$REPO_DIR/tools/fix_release_wheel.py" \
     --out "$DIST_DIR" "${wheels[0]}"
 
   local published
   shopt -s nullglob
-  published=("$DIST_DIR"/ffpa_attn_cu13-"$VERSION"-"$python_tag"-"$python_tag"-*.whl)
+  published=("$DIST_DIR"/"$WHEEL_STEM"-"$VERSION"-"$python_tag"-"$python_tag"-*.whl)
   shopt -u nullglob
   [[ ${#published[@]} -eq 1 ]] \
     || fail "$env: expected exactly one published wheel in $DIST_DIR, got ${#published[@]}"
@@ -276,7 +303,7 @@ for env in "${RELEASE_ENVS[@]}"; do
 done
 
 echo "[build_releases] built ${#RELEASE_ENVS[@]} environment(s): ${ENV_LIST_RAW// /,}"
-ls -lh "$DIST_DIR"/ffpa_attn_cu13-"$VERSION"-*.whl
+ls -lh "$DIST_DIR"/"$WHEEL_STEM"-"$VERSION"-*.whl
 
 if [[ "$PROFILE" == "mini" ]]; then
   echo "[build_releases] mini wheels validate the pipeline only: they carry a .devN version"
@@ -284,5 +311,5 @@ if [[ "$PROFILE" == "mini" ]]; then
   exit 0
 fi
 echo "[build_releases] publish them with:"
-echo "  bash tools/publish_index.sh --tag $PACKAGE_NAME-v$VERSION \\"
-echo "    --wheels \"$DIST_DIR\"/ffpa_attn_cu13-$VERSION-*.whl --site-repo <site-repo>"
+echo "  bash tools/publish_index.sh --tag $(release_tag) \\"
+echo "    --wheels \"$DIST_DIR\"/$WHEEL_STEM-$VERSION-*.whl --site-repo <site-repo>"

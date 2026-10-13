@@ -37,14 +37,15 @@
 
 <a id="install"></a>
 
-First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The wheel with the CUDA extension compiled in is ~1 GiB and therefore published on its own index instead of PyPI, see [Installation](user_guide/install.md):
+First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The CUDA extension ships under the same name from a separate index, one per CUDA toolkit -- see [Installation](user_guide/install.md):
 
 ```bash
-# First, install the prebuilt package from PyPI
-pip3 install -U ffpa-attn # Triton + CuTe-DSL backends; CUDA 13.0+, PyTorch 2.11+
-# Or, install the prebuilt wheel WITH the CUDA extension (forward only):
+# The default, most portable build: pure Python, Triton + CuTe-DSL backends.
+# CUDA 13.0+, PyTorch 2.11+; no architecture or Python-version constraint
+pip3 install -U ffpa-attn
+# Or, the same distribution with the CUDA extension compiled in (forward only):
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then
-pip3 install ffpa-attn-cu13 --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
+pip3 install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 # Or, build ffpa-attn from source, just follow the cmds
 git clone https://github.com/vipshop/ffpa-attn.git
 # Then, build the wheel package (Triton + CuTe-DSL backends)
@@ -56,8 +57,10 @@ cd ffpa-attn && pip3 install -e . --no-build-isolation
 bash ./build.sh --arch sm_120f --ext all --headdim default
 ```
 
-Do not install `ffpa-attn` and `ffpa-attn-cu13` into the same environment:
-both provide the `ffpa_attn/` package.
+Without an index, `pip3 install -U ffpa-attn` always installs the pure-Python
+build. The CUDA build is the same distribution (`ffpa-attn`, versioned
+`0.2.4+cu13`), so it replaces that build rather than living next to it -- one
+`ffpa_attn/` package either way.
 
 Then, try to accelerate the attention for large headdim with just <i><b>one-line</b></i> of code:
 

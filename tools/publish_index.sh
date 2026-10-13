@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-# Publish one release of ffpa-attn-cu13 and regenerate the index that serves it.
+# Publish one CUDA channel of ffpa-attn and regenerate the index that serves it.
 #
-# The wheels are GitHub Release assets of the site repository, because a wheel
-# here is around 1 GiB: no git repository accepts that (100 MB per file) and
-# neither does PyPI (100 MB again). What the site repository does carry is the
-# index itself -- a few KB of HTML -- which is what
+# The wheels are GitHub Release assets of the project repository: at ~80 MB each
+# they are close enough to PyPI's 100 MB per-file limit that publishing there
+# would be a bet, and a git repository takes less still. What the repository
+# does carry is the index itself -- a few KB of HTML -- which is what
 #
-#   pip install ffpa-attn-cu13 --index-url https://deftruth.github.io/ffpa-attn/whl/cu13/
+#   pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 #
-# points at. Every anchor in it carries the asset's sha256, which pip enforces,
-# so a half-uploaded or replaced asset fails loudly instead of installing.
+# points at, one directory per CUDA toolkit. Every anchor carries the asset's
+# sha256, which pip enforces, so a half-uploaded or replaced asset fails loudly
+# instead of installing.
 #
-# Refuses to index a pre-release version: tools/build_releases.sh's mini profile
-# produces 0.2.4.devN wheels for pipeline validation, and those must never be
-# what `pip install ffpa-attn-cu13` resolves to. The version is read out of the
-# wheel filenames and has to agree with the tag, so a mismatched pair -- a tag
-# for one version carrying another version's assets -- cannot be published.
+# Refuses a version without the channel's local suffix, and a pre-release
+# version: tools/build_releases.sh's mini profile produces 0.2.4.devN wheels for
+# pipeline validation, and those must never be what `pip install ffpa-attn`
+# resolves to. The version is read out of the wheel filenames and has to agree
+# with the tag, so a mismatched pair -- a tag naming one version while carrying
+# another's assets -- cannot be published.
 #
 # Usage:
 #   # the canonical index: the project's Pages branch, whose URL already carries
 #   # the repository name, so the branch root holds whl/cu13/ directly
 #   bash tools/publish_index.sh --tag ffpa-attn-cu13-v0.2.4 \
-#     --wheels dist/ffpa_attn_cu13-0.2.4-*.whl --site-repo <gh-pages worktree>
+#     --wheels 'dist/ffpa_attn-0.2.4+cu13-*.whl' --site-repo <gh-pages worktree>
 #   # the mirror on a personal site, under a directory of its own
 #   FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
 #     bash tools/publish_index.sh --tag ... --wheels ... --site-repo <that checkout>
@@ -34,6 +36,7 @@
 #   FFPA_SITE_URL       where the site is served            (default https://vipshop.github.io/ffpa-attn)
 #   FFPA_INDEX_PREFIX   path under the site root            (default empty, for the
 #                       project Pages branch above; set it for a mirror)
+#   FFPA_INDEX_PROJECT  distribution name to index          (default ffpa-attn)
 #   FFPA_INDEX_CHANNEL  CUDA channel sub-index              (default cu13)
 #   FFPA_FORCE_UPLOAD   1 -> replace an existing asset whose size differs
 set -euo pipefail
@@ -45,6 +48,8 @@ SITE_URL="${FFPA_SITE_URL:-https://vipshop.github.io/ffpa-attn}"
 # Pages branch uses, where the repository name already supplies the URL path.
 PREFIX="${FFPA_INDEX_PREFIX-}"
 CHANNEL="${FFPA_INDEX_CHANNEL:-cu13}"
+PROJECT="${FFPA_INDEX_PROJECT:-ffpa-attn}"
+WHEEL_STEM="${PROJECT//-/_}"
 FORCE_UPLOAD="${FFPA_FORCE_UPLOAD:-0}"
 
 TAG=""
@@ -69,7 +74,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="$2"; shift 2 ;;
     --wheels)
       # Several paths, because the shell expands a glob before the script sees
-      # it: `--wheels dist/ffpa_attn_cu13-0.2.4-*.whl` arrives as many arguments.
+      # it: `--wheels dist/ffpa_attn-0.2.4+cu13-*.whl` arrives as many arguments.
       shift
       [[ $# -gt 0 ]] || fail "--wheels requires at least one path"
       while [[ $# -gt 0 && "$1" != --* ]]; do WHEELS+=("$1"); shift; done ;;
@@ -88,28 +93,35 @@ done
 [[ -d "$SITE_REPO" ]] || fail "no such directory: $SITE_REPO"
 
 wheel_version() {
-  # ffpa_attn_cu13-<version>-<python tag>-<abi tag>-<platform tag>.whl
+  # <project stem>-<version>[+<channel>]-<python tag>-<abi tag>-<platform tag>.whl
   local name="${1##*/}"
-  printf '%s' "${name#ffpa_attn_cu13-}" | cut -d- -f1
+  printf '%s' "${name#$WHEEL_STEM-}" | cut -d- -f1
 }
 
 VERSION=""
 for wheel in "${WHEELS[@]}"; do
   [[ -f "$wheel" ]] || fail "no such wheel: $wheel"
-  [[ "$(basename "$wheel")" == ffpa_attn_cu13-* ]] || fail "not an ffpa-attn-cu13 wheel: $wheel"
+  [[ "$(basename "$wheel")" == "$WHEEL_STEM"-* ]] \
+    || fail "not a $PROJECT wheel: $wheel"
   version="$(wheel_version "$wheel")"
   [[ -n "$version" ]] || fail "cannot read a version out of $wheel"
   # The mini profile's validation wheels are missing most headdims, so they must
   # never reach the index -- whatever the tag on this run says.
   [[ "$version" != *dev* ]] || fail "refusing to publish a pre-release wheel: $wheel"
+  # The local version is what separates this build from the same release on
+  # PyPI; without it a user who already has that one satisfies the requirement
+  # and pip would install nothing.
+  [[ "$version" == *"+$CHANNEL" ]] \
+    || fail "$wheel carries '$version' rather than the '$CHANNEL' local version; \
+build it with FFPA_RELEASE_CHANNEL=$CHANNEL"
   [[ -z "$VERSION" || "$version" == "$VERSION" ]] \
     || fail "two versions in one publish: $VERSION and $version"
   VERSION="$version"
 done
-# The tag names the release the assets live on; a tag for another version would
-# file these wheels under a release page that says something else.
-[[ "$TAG" == "ffpa-attn-cu13-v$VERSION" ]] \
-  || fail "tag '$TAG' does not name version '$VERSION'; expected 'ffpa-attn-cu13-v$VERSION'"
+# The tag names the release the assets live on: the channel is in it, the local
+# version is not (a '+' in a URL path is a decoding step away from a space).
+[[ "$TAG" == "$PROJECT-$CHANNEL-v${VERSION%%+*}" ]] \
+  || fail "tag '$TAG' does not name version '$VERSION'; expected '$PROJECT-$CHANNEL-v${VERSION%%+*}'"
 
 if [[ "$INDEX_ONLY" == "0" ]]; then
   command -v gh >/dev/null 2>&1 || fail "the gh CLI is required to upload release assets"
@@ -129,7 +141,8 @@ index_sha256() {
   # What the currently published page records for one file, if anything: every
   # anchor href ends in '<filename>#sha256=<hex>', with the local version's '+'
   # percent-encoded.
-  local page="$SITE_REPO/$PREFIX/whl/$CHANNEL/ffpa-attn-cu13/index.html" name="${1//+/%2B}"
+  local page name="${1//+/%2B}"
+  page="$SITE_REPO/${PREFIX:+$PREFIX/}whl/$CHANNEL/$PROJECT/index.html"
   [[ -f "$page" ]] || return 0
   sed 's/"/\n/g' "$page" | grep -F -- "$name#sha256=" | head -1 | sed 's/.*#sha256=//'
 }
@@ -140,13 +153,14 @@ ensure_release() {
     return 0
   fi
   echo "[publish_index] creating release $TAG in $RELEASE_REPO"
-  # These wheels are assets of another distribution, not a release of the
-  # project itself: --latest=false keeps them from taking over the "Latest"
-  # badge of the repository's own releases.
-  gh release create "$TAG" --repo "$RELEASE_REPO" --title "ffpa-attn-cu13 $(basename "$TAG")" \
+  # These wheels are one channel of the package, not a release of it on its own:
+  # --latest=false keeps them from taking over the "Latest" badge of the
+  # repository's own releases.
+  local index_url="$SITE_URL/${PREFIX:+$PREFIX/}whl/$CHANNEL"
+  gh release create "$TAG" --repo "$RELEASE_REPO" --title "$PROJECT $CHANNEL ($(basename "$TAG"))" \
     --latest=false \
-    --notes "CUDA-extension wheels of the \`ffpa-attn-cu13\` distribution. Install with:
-    pip install ffpa-attn-cu13 --index-url $SITE_URL/$PREFIX/whl/$CHANNEL/"
+    --notes "CUDA-extension wheels of \`$PROJECT\`, built against $CHANNEL. Install with:
+    pip install $PROJECT --index-url $index_url/"
 }
 
 upload_wheels() {
@@ -180,10 +194,11 @@ index sha256 '${published_sha:-none}'); set FFPA_FORCE_UPLOAD=1 to replace the a
 }
 
 generate_index() {
-  echo "[publish_index] writing the index into $SITE_REPO/$PREFIX"
+  echo "[publish_index] writing the index into $SITE_REPO/${PREFIX:+$PREFIX/}whl/$CHANNEL"
   python3 "$REPO_DIR/tools/make_index.py" \
     --out "$SITE_REPO" \
     --prefix "$PREFIX" \
+    --project "$PROJECT" \
     --channel "$CHANNEL" \
     --release-url "$RELEASE_URL" \
     --site-url "$SITE_URL" \
@@ -201,7 +216,15 @@ commit_and_push() {
     echo "[publish_index] $SITE_REPO is not a git work tree root; the generated tree is all there is"
     return 0
   fi
-  git -C "$SITE_REPO" add "$PREFIX" .nojekyll
+  # An empty prefix means the work tree root *is* the index (a project Pages
+  # branch), so stage all of it -- there is nothing else in such a branch. A
+  # named prefix is a subdirectory of a shared site: stage that directory, which
+  # picks up deleted files in it too.
+  if [[ -n "$PREFIX" ]]; then
+    git -C "$SITE_REPO" add "$PREFIX" .nojekyll
+  else
+    git -C "$SITE_REPO" add -A
+  fi
   if git -C "$SITE_REPO" diff --cached --quiet; then
     echo "[publish_index] index unchanged"
     return 0

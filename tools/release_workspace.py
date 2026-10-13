@@ -19,7 +19,7 @@ the per-headdim translation units are generated under
 
 Usage:
     tools/release_workspace.py --source-root . --workspace .tmp/release/py312 \\
-        --package-name ffpa-attn-cu13 [--version 0.2.4]
+        --package-name ffpa-attn [--version 0.2.4+cu13]
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ _LINKED_TOOLS = ("build_fast.sh", "nvcc")
 
 def _parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(
-    description="Prepare a release workspace for the ffpa-attn-cu13 wheels."
+    description="Prepare an out-of-tree workspace for the ffpa-attn wheels."
   )
   parser.add_argument(
     "--source-root",

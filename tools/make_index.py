@@ -6,22 +6,29 @@ far too large for a git repository (100 MB again), so they live as GitHub
 Release assets of the site repository and this tree -- a few KB of HTML -- is
 what ``--index-url`` points at::
 
-    <out>/<prefix>/whl/cu13/index.html                  # PEP 503 root: one anchor per project
-    <out>/<prefix>/whl/cu13/ffpa-attn-cu13/index.html   # PEP 503 project: one anchor per file
-    <out>/<prefix>/index.html                           # human landing page
-    <out>/.nojekyll                                     # GitHub Pages runs Jekyll otherwise
+    <out>/<prefix>/whl/cu13/index.html               # PEP 503 root: one anchor per project
+    <out>/<prefix>/whl/cu13/ffpa-attn/index.html     # PEP 503 project: one anchor per file
+    <out>/<prefix>/index.html                        # human landing page
+    <out>/.nojekyll                                  # GitHub Pages runs Jekyll otherwise
+
+One directory per CUDA channel: ``whl/cu13/`` today, ``whl/cu14/`` when a build
+exists for it. A channel is entirely a matter of which ``--index-url`` a user
+passes -- the project name is the same everywhere, so a requirement does not
+change with the toolkit.
 
 Anchors point at the release assets (PEP 503 puts no constraint on where the
 files live) and carry ``#sha256=``, which pip enforces. The output tree is
 MERGED into whatever is already published: a new version must leave the previous
-version's links in place, or every ``pip install ffpa-attn-cu13==<old>`` written
-down against them stops resolving. A file that is rebuilt under the same name
+version's links in place, or every ``pip install ffpa-attn==<old>`` written down
+against them stops resolving. A file that is rebuilt under the same name
 replaces its own anchor, so a re-release cannot leave two hashes for one file.
 
-The index carries exactly one project, whose name does not exist on PyPI, so
-``--extra-index-url https://pypi.org/simple`` can only ever supply dependencies
--- it cannot shadow the wheels published here. docs/user_guide/install.md is
-that note in the form a user needs.
+The wheels are the CUDA build of a distribution that also exists on PyPI, and
+they carry a local version (``0.2.4+cu13``) for that reason: it sorts above the
+plain release, so pip prefers this build whenever both indexes are candidates,
+and an already installed pure-Python wheel of the same release no longer
+satisfies the requirement as-is. docs/user_guide/install.md is that note in the
+form a user needs.
 
 Stdlib only, so it runs wherever the release script runs.
 
@@ -50,7 +57,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote
 
-PROJECT = "ffpa-attn-cu13"
+# The project name reaches the renderers through these, which is why they are
+# module level: this is a one-shot CLI, and threading a parameter through every
+# page template would buy nothing. main() sets them from --project.
+DEFAULT_PROJECT = "ffpa-attn"
+PROJECT = DEFAULT_PROJECT
 # The directory PEP 503 requires for the project, and the prefix every wheel
 # filename of this distribution carries.
 NORMALIZED = re.sub(r"[-_.]+", "-", PROJECT).lower()
@@ -279,15 +290,18 @@ def _render_landing(
     </p>
     <p>
       <code>--index-url</code> on its own is complete for a machine that already has the
-      runtime dependencies. Anything missing sends pip looking for it here, where only
-      <code>{PROJECT}</code> exists -- add <code>--extra-index-url https://pypi.org/simple</code>
-      for those. That cannot shadow this package ({PROJECT} is not on PyPI), but it can move
-      your torch, which is the reason for the paragraph above.
+      runtime dependencies. Anything missing sends pip looking for it only here -- add
+      <code>--extra-index-url https://pypi.org/simple</code> for those, and mind the
+      paragraph above, because PyPI is also where a torch that is not the cu130 build
+      would come from.
     </p>
     <p>
-      Do not install PyPI's <code>ffpa-attn</code> next to this package: both own the
-      <code>ffpa_attn/</code> directory. This distribution installs the same Python package
-      with the CUDA extension compiled in, so it replaces the pure-Python one.
+      <code>{PROJECT}</code> is the same distribution PyPI lists, built here with the CUDA
+      extension compiled in and tagged with the local version <code>+{channel}</code>. That
+      suffix is what keeps the two apart: it sorts above the plain release, so pip takes
+      this build whenever both indexes are candidates, and a pure-Python wheel of the same
+      release that is already installed no longer satisfies the requirement unchanged.
+      Installing this replaces it -- one distribution, one <code>ffpa_attn/</code> directory.
     </p>
     <p>
       Platform tags: <code>{html.escape(platform_note)}</code> -- the tag reflects the GLIBC
@@ -307,8 +321,14 @@ def main(argv: list[str] | None = None) -> int:
   )
   parser.add_argument(
     "--prefix",
-    default="ffpa-attn",
-    help="path under the site root that holds the index"
+    default="",
+    help="path under the site root that holds the index; empty for a project "
+    "Pages branch, whose repository name already supplies the project path",
+  )
+  parser.add_argument(
+    "--project",
+    default=DEFAULT_PROJECT,
+    help="distribution name to index; only its own wheels are listed",
   )
   parser.add_argument(
     "--channel", default="cu13", help="CUDA channel, i.e. the sub-index name"
@@ -325,6 +345,14 @@ def main(argv: list[str] | None = None) -> int:
     help="where this tree is served, for the landing page"
   )
   args = parser.parse_args(argv)
+
+  # The project name reaches the renderers through these, which is why they are
+  # module level: this is a one-shot CLI, and threading a parameter through
+  # every page template would buy nothing.
+  global PROJECT, NORMALIZED, WHEEL_PREFIX
+  PROJECT = args.project
+  NORMALIZED = re.sub(r"[-_.]+", "-", PROJECT).lower()
+  WHEEL_PREFIX = PROJECT.replace("-", "_") + "-"
 
   paths: list[Path] = []
   for given in args.wheels:
