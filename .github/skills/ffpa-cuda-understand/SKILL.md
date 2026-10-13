@@ -339,7 +339,7 @@ WS split-D 变体（`launch_cute_fwd_split_d_ws_sm120`）已被禁用：`setmaxn
 
 | kernel | D 范围（kHeadDim） | 结构 |
 |---|---|---|
-| **persist-D WS** | `D ≤ 224`（%32：32..224；kBc=128 for D≤128，64 for D>128） | 128 producer + 256 consumer，384T；`kPersistQs2rDefault`（Q s2r 常驻寄存器，K stage0 复用 Q smem） |
+| **persist-D WS** | `D ≤ 224`（%32：32..224；kBc=128 for D≤128，64 for D>128）**⚠️ D=192 正确性 bug 未修——RFC FC-17（§5.4）** | 128 producer + 256 consumer，384T；`kPersistQs2rDefault`（Q s2r 常驻寄存器，K stage0 复用 Q smem） |
 | **split-D M8N1** | `224 < D < 768` | non-WS，M8N1 设计（同 fp16 split-D） |
 | **split-D M4N2** | `D ≥ 768` | atom (4,2,1)，O regs=D/4 |
 | **persist-D sm89** | `D ≤ 224` 且 %64==0（sm89 专属，`cute/fp8/sm_89/persist_d.cuh`） | 128T non-WS cp.async（sm80 装载协议）+ sm120 fp8 计算层（int8 QK MMA / fixed p_scale softmax / f8f8f16 PV inst_buf 两级累加：per-tile f16 inst_buf + f32 RO absorb）；**2 CTA/SM 驻留**（kBr=64，`__launch_bounds__(128, 2)`）+ K/V stage 参数化（kBc∈{64,128} × S∈{1,2,3}，默认 64/1）；Q s2r 常驻 + K/V 独立 stage 池组 FIFO（wait<2S-1>/<2S-2>） |
@@ -389,6 +389,7 @@ D 交叉点与 fp16 家族一致（<768 M8N1 / ≥768 M4N2）。`FFPA_FP8_FORCE_
 - **causal early rows 的 ESS 效应**（kernel 头注释的量化分析）：causal 前几行 effective sample size≈1，输出幅度 ~3.1σ，fp8 每 stage ~5% 相对误差 → 绝对误差是 dense 的 15x（0.22 vs 0.015）。**相对误差两者相同**，是幅度放大不是误差放大。V 量化是最大单项误差源（0.19 > QK 0.13 > P 0.11）。缓解：全链 fp16（hybrid）或 per-channel V scale。
 - **P 量化精度丢失是量化注意力精度损失的最主要根源之一**：Q/K/V/P 四个量化对象中，Q/K/V 都能离线校准（smooth、per-channel/per-block scale，§11.8），唯独 $P$ 是 kernel 内 **online 量化**产物——softmax 现场算出，值域 [0,1]、逐行分布剧烈变化（causal 早行近 one-hot、dense 行近均匀且数值极小），只能用固定/保守 scale（fp8 固定 $1/448$、fp4 两级 2688 域，§11.6/§11.10），无法像 Q/K/V 那样离线校准；其相对误差经 $O=PV$ 直接传入输出。实测分解中 P 0.11 与 QK 0.13 同量级（V 0.19 最大单项）；fp4 下 P/V 同为 e2m1、问题整体严重一个量级，SA3 的核心贡献（两级 P 量化，§11.10）正是针对 P 的 scale 动态范围问题。**后续方向：针对 P online 量化的精度优化**（更好的满量程利用率、行感知 scale、causal 早行 P 高精度补偿等）值得探索——但须避开已证伪形态（per-row P quant + 重开 lazy rescale，§5.8 #12），在不破坏固定域 FFMA 吸收的前提下另寻方案。
 - 已知未解精度限制：causal 早行 lse 误差可达 ~6e-2（e4m3 P 对近 1 概率的舍入），dense ~4e-3。
+- **⚠️ fp8 persist-D D=192 正确性 bug（未修，RFC FC-17）**：`--cuda-impl fp8 --D 192` 输出错误行——`O_err≈3.55 / allclose=False`（正常 fp8 dense ~0.02-0.05），坏行集中 `row%128 ∈ [64,127]`，个别行错而非整块；与量化 knob 无关（默认/per-thread QK/per-channel V/no-smooth-K 全错），fp16 CUTE 同 D 正常。2026-10-13 在发布包 `ffpa-attn 0.2.4+cu13`（sm_120）复现，同批 D=64/128 正常；主要嫌疑为 D>128 时 kBc 128→64 切换路径（V^T SW64 swizzle / `n_rb_kv` 尺度索引 / stage 相位）。影响面：量化家族 persist-only，D≤224 含 192，sm_120 与真实 Ada sm89 同源。**修复或 dispatch 短路落地前，D=192/224 量化路径慎用（建议回落 fp16）**。
 - 与 SageAttention 的精度 gap 根因分析见 memory `ffpa-fp8-sage-gap-rootcause` / `ffpa-fp8-precision-gap-vs-sage`。
 
 ### 5.5 hybrid（两阶段混合精度）

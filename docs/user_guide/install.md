@@ -35,6 +35,34 @@ CUDA line is meant to move on its own, one index per toolkit: `whl/cu13/` today,
 - An NVIDIA GPU covered by the compiled architectures: `sm_89` (Ada: L20/L40,
   RTX 40 series) or `sm_120f` (Blackwell GeForce: RTX 5090, RTX PRO 5000/6000).
 
+## What the CUDA wheel covers
+
+Both architectures are built from one flag set (`--arch 89,120f --ext all
+--headdim default`), so each wheel carries the same compiled headdims --
+`64,128,192,256,320,512` -- and every kernel family that set reaches:
+
+| Family | sm_89 (Ada) | sm_120f (Blackwell) | Compiled headdims |
+|---|---|---|---|
+| fp16 / bf16 | ✔ cp.async | ✔ TMA | all six |
+| FP8 (persist-D) | ✔ cp.async | ✔ TMA | `64`, `128`, `192` |
+| NVFP4 (persist-D) | — | ✔ TMA | `64`, `128`, `192`, `256` |
+| native (cp.async / TMA) | ✔ | ✔ | all six, plus any `D % 8 == 0` in `[8,1024]` via pad |
+
+The quantized families are **persist-D only** in the default build: `--ext all`
+compiles the FP8 `D<=224` and NVFP4 `64<=D<=256` windows and nothing past
+them. A quantized call outside its window raises a `rebuild with
+ENABLE_FFPA_QUANT_SPLIT_D=1` error instead of quietly dispatching elsewhere.
+The knob reference is in [FP8 / FP4 Attention](quantized.md), the per-family
+dispatch table in [CUDA Backend](backends/cuda.md).
+
+> [!WARNING]
+> **FP8 at `D=192` currently returns wrong results.** The error is confined to
+> a subset of rows and is a correctness bug, not a precision drift; it was
+> reproduced on `sm_120` in this wheel, and the sm_89 fp8 path shares the same
+> persist-D code. `D=64` and `D=128` are unaffected. Until it is fixed, keep
+> FP8 off `D=192` -- use fp16/bf16 there, or the fp4 family if it fits your
+> model.
+
 ## Install the CUDA build
 
 ```bash
