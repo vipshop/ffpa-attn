@@ -47,7 +47,7 @@ pip3 install -U ffpa-attn
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then.
 # Our index holds the wheel alone, so the requirements come from PyPI
 pip3 install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
-  --extra-index-url https://pypi.org/simple
+     --extra-index-url https://pypi.org/simple
 ```
 
 ```bash
