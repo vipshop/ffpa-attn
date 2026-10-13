@@ -606,26 +606,32 @@ def run_forward_examples(
     print(f"| {key:<{key_w}} | {val:<{val_w}} |")
   print(bar)
   if forward_backend == "triton" and D <= 256:
-    triton_small_d_enabled = bool(int(os.environ.get(TRITON_SMALL_D_ENV, "0")))
-    print(
-      f"[Triton] D <= 256 {'runs FFPA Triton' if triton_small_d_enabled else 'stays on the SDPA fallback path'} "
-      f"when {TRITON_SMALL_D_ENV}={'1' if triton_small_d_enabled else '0'}."
+    triton_small_d_enabled = bool(int(os.environ.get(TRITON_SMALL_D_ENV, "1")))
+    state = (
+      f"runs FFPA Triton (default; set {TRITON_SMALL_D_ENV}=0 to fall back to SDPA)"
+      if triton_small_d_enabled else
+      f"stays on the SDPA fallback path ({TRITON_SMALL_D_ENV}=0)"
     )
+    print(f"[Triton] small-D (64 <= D <= 256) {state}.")
   if forward_backend == "cuda" and D <= 256:
-    cuda_small_d_enabled = bool(int(os.environ.get(CUDA_SMALL_D_ENV, "0")))
-    print(
-      f"[CUDA] D <= 256 {'runs FFPA CUDA' if cuda_small_d_enabled else 'stays on the SDPA fallback path'} "
-      f"when {CUDA_SMALL_D_ENV}={'1' if cuda_small_d_enabled else '0'}."
+    cuda_small_d_enabled = bool(int(os.environ.get(CUDA_SMALL_D_ENV, "1")))
+    state = (
+      f"runs FFPA CUDA (default; set {CUDA_SMALL_D_ENV}=0 to fall back to SDPA)"
+      if cuda_small_d_enabled else
+      f"stays on the SDPA fallback path ({CUDA_SMALL_D_ENV}=0)"
     )
+    print(f"[CUDA] small-D (64 <= D <= 256) {state}.")
   if forward_backend == "cutedsl":
     cutedsl_small_d_enabled = bool(
-      int(os.environ.get(CUTEDSL_SMALL_D_ENV, "0"))
+      int(os.environ.get(CUTEDSL_SMALL_D_ENV, "1"))
     )
     if D < 320:
-      print(
-        f"[CuTeDSL] D < 320 {'runs the SM80 Split-D fallback path' if cutedsl_small_d_enabled else 'stays on the SDPA fallback path'} "
-        f"when {CUTEDSL_SMALL_D_ENV}={'1' if cutedsl_small_d_enabled else '0'}."
+      state = (
+        f"runs the SM80 Split-D fallback path (default; set {CUTEDSL_SMALL_D_ENV}=0 to fall back to SDPA)"
+        if cutedsl_small_d_enabled else
+        f"stays on the SDPA fallback path ({CUTEDSL_SMALL_D_ENV}=0)"
       )
+      print(f"[CuTeDSL] small-D (64 <= D < 320) {state}.")
     else:
       print(
         "[CuTeDSL] backend constraints in effect: SM8x/SM90/SM100 dense path, no attn_mask/dropout."

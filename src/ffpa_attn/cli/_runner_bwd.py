@@ -1002,20 +1002,24 @@ def run_backward_examples(
     print(f"| {key:<{key_w}} | {val:<{val_w}} |")
   print(bar)
   if backward_backend != "cutedsl" and D <= 256:
-    triton_small_d_enabled = bool(int(os.environ.get(TRITON_SMALL_D_ENV, "0")))
-    print(
-      f"[Triton-forward] D <= 256 {'runs FFPA Triton' if triton_small_d_enabled else 'stays on the SDPA fallback path'} "
-      f"when {TRITON_SMALL_D_ENV}={'1' if triton_small_d_enabled else '0'}."
+    triton_small_d_enabled = bool(int(os.environ.get(TRITON_SMALL_D_ENV, "1")))
+    state = (
+      f"runs FFPA Triton (default; set {TRITON_SMALL_D_ENV}=0 to fall back to SDPA)"
+      if triton_small_d_enabled else
+      f"stays on the SDPA fallback path ({TRITON_SMALL_D_ENV}=0)"
     )
+    print(f"[Triton-forward] small-D (64 <= D <= 256) {state}.")
   if backward_backend == "cutedsl":
     cutedsl_small_d_enabled = bool(
-      int(os.environ.get(CUTEDSL_SMALL_D_ENV, "0"))
+      int(os.environ.get(CUTEDSL_SMALL_D_ENV, "1"))
     )
     if D < 320:
-      print(
-        f"[CuTeDSL] D < 320 {'runs the SM80 Split-D fallback path' if cutedsl_small_d_enabled else 'stays on the SDPA fallback path'} "
-        f"when {CUTEDSL_SMALL_D_ENV}={'1' if cutedsl_small_d_enabled else '0'}."
+      state = (
+        f"runs the SM80 Split-D fallback path (default; set {CUTEDSL_SMALL_D_ENV}=0 to fall back to SDPA)"
+        if cutedsl_small_d_enabled else
+        f"stays on the SDPA fallback path ({CUTEDSL_SMALL_D_ENV}=0)"
       )
+      print(f"[CuTeDSL] small-D (64 <= D < 320) {state}.")
     else:
       print(
         "[CuTeDSL] backend constraints in effect: SM8x/SM90/SM100 dense path, no mask/dropout."

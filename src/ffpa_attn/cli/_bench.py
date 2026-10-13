@@ -816,7 +816,8 @@ def _require_cute_device() -> int:
 
 
 def _env_flag_enabled(name: str) -> bool:
-  return bool(int(os.environ.get(name, "0")))
+  """Read a small-D gate flag; the gates are enabled unless set to 0."""
+  return bool(int(os.environ.get(name, "1")))
 
 
 def _benchmark_effective_forward_backends(
@@ -854,38 +855,46 @@ def _emit_small_d_backend_notes(args: argparse.Namespace) -> None:
   if CUDA_BACKEND in effective_forward_backends and args.D <= 256:
     if _env_flag_enabled(CUDA_SMALL_D_ENV):
       print(
-        f"[cuda] D <= 256 is enabled for FFPA benchmarking via {CUDA_SMALL_D_ENV}=1.",
+        f"[cuda] small-D (64 <= D <= 256) benchmarks the FFPA CUDA kernels "
+        f"(enabled by default); set {CUDA_SMALL_D_ENV}=0 to restore the "
+        f"SDPA fallback.",
         file=sys.stderr,
       )
     else:
       raise SystemExit(
-        "[cuda] D <= 256 requires FFPA_CUDA_ALLOW_SMALL_D=1 "
-        f"when using --fwd-backend cuda. "
-        f"Alternatively, use {TRITON_SMALL_D_ENV}=1 with --fwd-backend triton, or "
-        f"{CUTEDSL_SMALL_D_ENV}=1 with --fwd-backend cutedsl."
+        f"[cuda] D <= 256 is disabled because {CUDA_SMALL_D_ENV}=0 was set "
+        f"explicitly, so the benchmark would measure the SDPA fallback. "
+        f"Unset it (or set it to 1) to benchmark the CUDA small-D kernels, "
+        f"or use --fwd-backend triton / cutedsl."
       )
 
   if TRITON_BACKEND in effective_forward_backends and args.D <= 256:
     if _env_flag_enabled(TRITON_SMALL_D_ENV):
       print(
-        f"[triton] D <= 256 is enabled for FFPA benchmarking via {TRITON_SMALL_D_ENV}=1.",
+        f"[triton] small-D (64 <= D <= 256) benchmarks the FFPA Triton "
+        f"kernels (enabled by default); set {TRITON_SMALL_D_ENV}=0 to restore "
+        f"the SDPA fallback.",
         file=sys.stderr,
       )
     else:
       print(
-        f"[triton] D <= 256 stays on the SDPA fallback path unless {TRITON_SMALL_D_ENV}=1.",
+        f"[triton] small-D (64 <= D <= 256) stays on the SDPA fallback path "
+        f"({TRITON_SMALL_D_ENV}=0).",
         file=sys.stderr,
       )
 
   if CUTEDSL_BACKEND in effective_forward_backends and args.D < 320:
     if _env_flag_enabled(CUTEDSL_SMALL_D_ENV):
       print(
-        f"[cutedsl] D < 320 is enabled via {CUTEDSL_SMALL_D_ENV}=1 and runs through the SM80 Split-D fallback path.",
+        f"[cutedsl] small-D (64 <= D < 320) runs through the SM80 Split-D "
+        f"fallback path (enabled by default); set {CUTEDSL_SMALL_D_ENV}=0 to "
+        f"restore the SDPA fallback.",
         file=sys.stderr,
       )
     else:
       print(
-        f"[cutedsl] D < 320 stays on the SDPA fallback path unless {CUTEDSL_SMALL_D_ENV}=1.",
+        f"[cutedsl] {CUTEDSL_SMALL_D_ENV}=0: 64 <= D <= 256 stays on the "
+        f"SDPA fallback path, 256 < D < 320 raises NotImplementedError.",
         file=sys.stderr,
       )
 

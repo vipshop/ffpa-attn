@@ -257,12 +257,11 @@ def test_ffpa_attn_func_triton_additive_attn_mask_matches_sdpa():
   torch.testing.assert_close(out, ref, **_tolerance(torch.float16))
 
 
-def test_ffpa_attn_func_triton_small_d_default_falls_back_to_sdpa(monkeypatch):
+def test_ffpa_attn_func_triton_small_d_disabled_falls_back_to_sdpa(monkeypatch):
   import ffpa_attn.ffpa_attn_interface as iface
 
-  # Assert the default (env unset) semantics even when the surrounding
-  # shell leaked FFPA_TRITON_ALLOW_SMALL_D=1.
-  monkeypatch.delenv("FFPA_TRITON_ALLOW_SMALL_D", raising=False)
+  # Explicit opt-out restores the legacy SDPA fallback for small-D.
+  monkeypatch.setenv("FFPA_TRITON_ALLOW_SMALL_D", "0")
   q, k, v = _alloc_qkv(1, 4, 1024, 256, torch.float16)
 
   def _unexpected_apply(*args, **kwargs):
@@ -279,25 +278,94 @@ def test_ffpa_attn_func_triton_small_d_default_falls_back_to_sdpa(monkeypatch):
   )
 
 
-def test_ffpa_attn_func_triton_small_d_env_uses_triton(monkeypatch):
-  monkeypatch.setenv("FFPA_TRITON_ALLOW_SMALL_D", "1")
+def test_ffpa_attn_func_triton_small_d_default_uses_triton(monkeypatch):
+  import ffpa_attn.ffpa_attn_interface as iface
+
+  # Assert the default (env unset) semantics even when the surrounding
+  # shell leaked FFPA_TRITON_ALLOW_SMALL_D.
+  monkeypatch.delenv("FFPA_TRITON_ALLOW_SMALL_D", raising=False)
   q, k, v = _alloc_qkv(1, 4, 1024, 256, torch.float16)
+  call_count = [0]
+  orig = iface.FFPAAttnFunc.apply
+
+  def spy(*args, **kwargs):
+    call_count[0] += 1
+    return orig(*args, **kwargs)
 
   def _unexpected_flash(*args, **kwargs):
     raise AssertionError(
-      "small-D triton should bypass aten flash when env is enabled"
+      "small-D triton should bypass aten flash by default"
     )
 
+  monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)
   monkeypatch.setattr(
     ffpa_attn_functional, "_flash_attn_forward_aten", _unexpected_flash
   )
 
   out = ffpa_attn_func(q, k, v, forward_backend="triton")
 
+  assert call_count[0] == 1
   assert out.shape == q.shape
   assert torch.isfinite(out).all()
   torch.testing.assert_close(
     out, _sdpa_ref(q, k, v), **_tolerance(torch.float16)
+  )
+
+
+def test_ffpa_attn_func_cuda_small_d_default_uses_cuda(monkeypatch):
+  import ffpa_attn.ffpa_attn_interface as iface
+
+  _require_cuda_forward_impl()
+  # Assert the default (env unset) semantics even when the surrounding
+  # shell leaked FFPA_CUDA_ALLOW_SMALL_D. The string backend keeps this off
+  # the inference fast path so FFPAAttnFunc.apply is the observed boundary.
+  monkeypatch.delenv("FFPA_CUDA_ALLOW_SMALL_D", raising=False)
+  q, k, v = _alloc_qkv(1, 4, 1024, 128, torch.bfloat16)
+  call_count = [0]
+  orig = iface.FFPAAttnFunc.apply
+
+  def spy(*args, **kwargs):
+    call_count[0] += 1
+    return orig(*args, **kwargs)
+
+  def _unexpected_flash(*args, **kwargs):
+    raise AssertionError(
+      "small-D cuda should bypass aten flash by default"
+    )
+
+  monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)
+  monkeypatch.setattr(
+    ffpa_attn_functional, "_flash_attn_forward_aten", _unexpected_flash
+  )
+
+  out = ffpa_attn_func(q, k, v, forward_backend="cuda")
+
+  assert call_count[0] == 1
+  assert out.shape == q.shape
+  assert torch.isfinite(out).all()
+  torch.testing.assert_close(
+    out, _sdpa_ref(q, k, v), **_tolerance(torch.bfloat16)
+  )
+
+
+def test_ffpa_attn_func_cuda_small_d_disabled_falls_back_to_sdpa(monkeypatch):
+  import ffpa_attn.ffpa_attn_interface as iface
+
+  # Explicit opt-out restores the legacy SDPA fallback for small-D.
+  monkeypatch.setenv("FFPA_CUDA_ALLOW_SMALL_D", "0")
+  q, k, v = _alloc_qkv(1, 4, 1024, 128, torch.bfloat16)
+
+  def _unexpected_apply(*args, **kwargs):
+    raise AssertionError(
+      "small-D cuda should fall back before FFPAAttnFunc.apply"
+    )
+
+  monkeypatch.setattr(iface.FFPAAttnFunc, "apply", _unexpected_apply)
+
+  out = ffpa_attn_func(q, k, v, forward_backend="cuda")
+
+  torch.testing.assert_close(
+    out, _sdpa_ref(q, k, v), **_tolerance(torch.bfloat16)
   )
 
 
@@ -330,8 +398,8 @@ def test_ffpa_attn_func_cuda_fp32_mask_matches_sdpa():
   """fp32 masks work in every build: natively with ENABLE_FFPA_CUDA_MASK_FP32,
   downcast to q.dtype otherwise (bf16 inputs stay valid in trimmed builds)."""
   _require_cuda_forward_impl()
-  # D=320 keeps this on the real CUDA kernel path (D<=256 without
-  # FFPA_CUDA_ALLOW_SMALL_D would silently SDPA-fallback).
+  # D=320 keeps this on the large-D CUDA kernel path, independent of the
+  # small-D backend gates.
   q, k, v = _alloc_qkv(1, 4, 512, 320, torch.bfloat16)
   torch.manual_seed(1)
   attn_mask = torch.randn(
@@ -889,7 +957,7 @@ def test_ffpa_attn_func_small_d_honors_output_buffer():
 
 @pytest.mark.skip(
   reason=
-  "D <= 256 now delegates to F.scaled_dot_product_attention directly, bypassing FFPAAttnFunc"
+  "Nq=32 (<512) routes to the SDPA fallback, bypassing FFPAAttnFunc"
 )
 def test_ffpa_attn_func_small_d_backward_consumes_saved_flash_state(
   monkeypatch

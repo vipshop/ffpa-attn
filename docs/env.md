@@ -66,9 +66,9 @@ template is dispatched. Most are booleans (`0` / `1`) unless noted.
 
 ### Backend gating (small-D / fallback)
 
-- <span style="color:#c77dff;">FFPA_CUDA_ALLOW_SMALL_D</span>, default `False (0)`, When set to `1`, the CUDA backend is allowed to run small headdims (`D<=256`) instead of falling back to SDPA. Required for `bench --cuda-impl fp8/fp4 --D 64/128` and for small-D fp8/fp4 deployment.
-- <span style="color:#c77dff;">FFPA_TRITON_ALLOW_SMALL_D</span>, default `False (0)`, Same gate for the Triton backend.
-- <span style="color:#c77dff;">FFPA_CUTE_ALLOW_SMALL_D</span>, default `False (0)`, Same gate for the CuTeDSL backend.
+- <span style="color:#c77dff;">FFPA_CUDA_ALLOW_SMALL_D</span>, default `True (1)`, The CUDA backend runs small headdims (`D<=256`) instead of falling back to SDPA. This covers `bench --cuda-impl fp8/fp4 --D 64/128` and small-D fp8/fp4 deployment; a headdim that was not compiled raises at dispatch. Set to `0` to restore the SDPA fallback for that window.
+- <span style="color:#c77dff;">FFPA_TRITON_ALLOW_SMALL_D</span>, default `True (1)`, Same gate for the Triton backend; set to `0` to restore the SDPA fallback.
+- <span style="color:#c77dff;">FFPA_CUTE_ALLOW_SMALL_D</span>, default `True (1)`, Same gate for the CuTeDSL backend; set to `0` to restore the SDPA fallback.
 - <span style="color:#c77dff;">FFPA_FORCE_NO_SDPA_FALLBACK</span>, default `False (0)`, Test/dev escape hatch: when set (`!= ""` and `!= "0"`), `FFPAAttnMeta.fallback` never reroutes to SDPA, so tests assert the selected backend's real kernel path.
 
 ### Logging

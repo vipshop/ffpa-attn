@@ -18,7 +18,7 @@ import torch
 from .triton import (
   _ffpa_attn_forward_triton,
   _ffpa_attn_backward_triton,
-)  # Large-D by default; small-D when FFPA_TRITON_ALLOW_SMALL_D=1.
+)  # Small-D (D <= 256) by default; FFPA_TRITON_ALLOW_SMALL_D=0 restores SDPA.
 from .aten import (
   _flash_attn_forward_aten,
   _flash_attn_backward_aten,
@@ -29,7 +29,7 @@ try:
     _ffpa_attn_forward_cute,
     _ffpa_attn_backward_cute,
     _ffpa_attn_varlen_cute,
-  )  # Large-D by default; small-D when FFPA_CUTE_ALLOW_SMALL_D=1.
+  )  # Small-D (D <= 256) by default; FFPA_CUTE_ALLOW_SMALL_D=0 restores SDPA.
 except Exception:
   _ffpa_attn_forward_cute = None
   _ffpa_attn_backward_cute = None
@@ -91,20 +91,31 @@ _ATEN_SMALL_HEAD_DIM_MAX = 256
 _FFPA_SMALL_HEAD_DIM_MIN = 64
 
 
-def _env_flag_enabled(name: str) -> bool:
-  return bool(int(os.environ.get(name, "0")))
+def _env_flag_enabled(name: str, default: str = "0") -> bool:
+  """Read a boolean environment flag.
+
+  :param name: Environment variable name.
+  :param default: Value used when the variable is unset.
+  :returns: True when the resolved value is a non-zero integer.
+  """
+  return bool(int(os.environ.get(name, default)))
 
 
 def _allow_triton_small_d() -> bool:
-  return _env_flag_enabled("FFPA_TRITON_ALLOW_SMALL_D")
+  # Small-D (64 <= D <= 256) dispatches to the Triton kernels by default; set
+  # the env to 0 to restore the legacy SDPA fallback.
+  return _env_flag_enabled("FFPA_TRITON_ALLOW_SMALL_D", "1")
 
 
 def _allow_cute_small_d() -> bool:
-  return _env_flag_enabled("FFPA_CUTE_ALLOW_SMALL_D")
+  # Same default-on gate for the CuTeDSL backend. Mirror reader: keep in sync
+  # with cute/_utils.py::cute_small_d_enabled.
+  return _env_flag_enabled("FFPA_CUTE_ALLOW_SMALL_D", "1")
 
 
 def _allow_cuda_small_d() -> bool:
-  return _env_flag_enabled("FFPA_CUDA_ALLOW_SMALL_D")
+  # Same default-on gate for the CUDA backend.
+  return _env_flag_enabled("FFPA_CUDA_ALLOW_SMALL_D", "1")
 
 
 def is_nhd_zero_copy_input(t: torch.Tensor) -> bool:
@@ -281,8 +292,8 @@ def _ffpa_attn_forward(
   fast paths may be added in the future.
 
   Returns ``None`` when the config needs the full :func:`ffpa_attn_func`
-  chain (grad mode on, small-D SDPA routing, ``D > 1024``, ``Nq < 512``,
-  ``Nkv < 512``, bf16 with ``acc='f16'``, or
+  chain (grad mode on, small-D with the backend gate disabled, ``D > 1024``,
+  ``Nq < 512``, ``Nkv < 512``, bf16 with ``acc='f16'``, or
   ``forward_backend.tensor_layout='NHD'`` on a non-persist-D path). The
   caller is responsible for pre-validated packed inputs (BHND fp16/bf16,
   or NHD when ``forward_backend.tensor_layout='NHD'``).

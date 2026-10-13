@@ -48,8 +48,9 @@ overrides are backward-only options and assert `backward=True`.
   replay), bit-exact w.r.t. PyTorch's mem-efficient kernel for
   `B*H*Nq*Nkv <= 2^32`.
 - **dtypes**: fp16 / bf16.
-- **Headdim**: FFPA-tuned range `320 ~ 1024`; `D<=256` works with
-  `FFPA_TRITON_ALLOW_SMALL_D=1` (otherwise SDPA fallback).
+- **Headdim**: FFPA-tuned range `320 ~ 1024`; small-D (`D<=256`) also runs
+  the Triton kernels by default — set `FFPA_TRITON_ALLOW_SMALL_D=0` to
+  restore the SDPA fallback for that window.
 - **Layout**: packed `[B, H, N, D]` (SDPA layout) with unit last stride;
   non-contiguous inputs are made contiguous. NHD / strided-NHD zero-copy
   and varlen (packed THD) are **not** supported by this backend.

@@ -110,10 +110,20 @@ def test_cutedsl_autograd_matches_triton(is_causal, D, dtype):
 
 
 @pytest.mark.parametrize("D", [128, 256])
-def test_cutedsl_falls_back_for_small_head_dim(D):
-  """D <= 256 with cutedsl backend falls back to SDPA."""
+def test_cutedsl_falls_back_for_small_head_dim(D, monkeypatch):
+  """Explicit FFPA_CUTE_ALLOW_SMALL_D=0 restores the SDPA fallback."""
+  import ffpa_attn.ffpa_attn_interface as iface
+
+  monkeypatch.setenv("FFPA_CUTE_ALLOW_SMALL_D", "0")
   torch.manual_seed(0)
   q = torch.randn(1, 8, 1024, D, dtype=torch.bfloat16, device="cuda")
+
+  def _unexpected_apply(*args, **kwargs):
+    raise AssertionError(
+      "small-D cutedsl should fall back before FFPAAttnFunc.apply"
+    )
+
+  monkeypatch.setattr(iface.FFPAAttnFunc, "apply", _unexpected_apply)
 
   out = ffpa_attn_func(q, q, q, forward_backend="cutedsl")
 
@@ -121,10 +131,13 @@ def test_cutedsl_falls_back_for_small_head_dim(D):
   torch.testing.assert_close(out, ref, **_tol())
 
 
-def test_cutedsl_small_head_dim_env_routes_through_ffpaattnfunc(monkeypatch):
+def test_cutedsl_small_head_dim_routes_through_ffpaattnfunc(monkeypatch):
+  """D <= 256 runs the CuTeDSL kernels by default (no env required)."""
   import ffpa_attn.ffpa_attn_interface as iface
 
-  monkeypatch.setenv("FFPA_CUTE_ALLOW_SMALL_D", "1")
+  # Assert the default (env unset) semantics even when the surrounding
+  # shell leaked FFPA_CUTE_ALLOW_SMALL_D.
+  monkeypatch.delenv("FFPA_CUTE_ALLOW_SMALL_D", raising=False)
   q = torch.randn(1, 8, 1024, 256, dtype=torch.bfloat16, device="cuda")
   call_count = [0]
   orig = iface.FFPAAttnFunc.apply
@@ -135,7 +148,7 @@ def test_cutedsl_small_head_dim_env_routes_through_ffpaattnfunc(monkeypatch):
 
   def _unexpected_flash(*args, **kwargs):
     raise AssertionError(
-      "small-D cutedsl should bypass aten flash when env is enabled"
+      "small-D cutedsl should bypass aten flash by default"
     )
 
   monkeypatch.setattr(iface.FFPAAttnFunc, "apply", spy)

@@ -114,7 +114,9 @@ public API raises rather than silently misreading `[B, N, H, D]`.
 
 - **Forward only** — `CUDABackend` asserts `backward=False`.
 - fp16/bf16 activations; bf16 forces `acc="f32"`.
-- `D > 1024` (or unsupported small-D) falls back to SDPA; see
+- `D > 1024` falls back to SDPA. Small-D (`D <= 256`) runs the CUDA kernels
+  by default and falls back only when `FFPA_CUDA_ALLOW_SMALL_D=0` is set
+  explicitly; see
   [Automatic SDPA fallback](overview.md#automatic-sdpa-fallback).
 - Default source builds compile **bf16 inputs only** and **no fp32
   attn_mask variants** (see the build flags below). fp16 inputs raise a
@@ -158,7 +160,8 @@ Default build trimming (source builds):
 ## Verifying
 
 ```bash
-export FFPA_CUDA_ALLOW_SMALL_D=1 # only if you benchmark D<=256
+# Small-D (D <= 256) benchmarks the CUDA kernels by default; set
+# FFPA_CUDA_ALLOW_SMALL_D=0 to restore the SDPA fallback.
 
 # Forward-only sweep with the CUDA backend (native path).
 python -m ffpa_attn.bench --fwd-backend cuda --no-bwd

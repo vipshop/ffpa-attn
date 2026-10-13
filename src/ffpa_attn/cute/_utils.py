@@ -101,7 +101,10 @@ torch2cute_dtype_map = {
 
 
 def cute_small_d_enabled() -> bool:
-  return bool(int(os.environ.get("FFPA_CUTE_ALLOW_SMALL_D", "0")))
+  # Small-D (D <= 256, plus the 256 < D < 320 window) routes to the CuTeDSL
+  # kernels by default; set the env to 0 to restore the legacy SDPA fallback.
+  # Mirror reader: keep in sync with functional.py::_allow_cute_small_d.
+  return bool(int(os.environ.get("FFPA_CUTE_ALLOW_SMALL_D", "1")))
 
 
 def dense_min_supported_head_dim() -> int:

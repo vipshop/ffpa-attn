@@ -1041,13 +1041,15 @@ native 家族覆盖非整 D（补齐与 CuTe 家族的对齐）。
   （现 `--headdim all` 已改为 {64,128,192,256,320,512,768}，验收当时为旧全量集）。
 - **验收**（规范 3，`ffpa_attn.bench` CLI 全链路）：
   - `--cuda-impl native --D 328 --tasks self-attn,cross-attn,decode-attn,gqa,causal,non-aligned` 通过（328→384）；
-  - `--cuda-impl native --D 120`（`FFPA_CUDA_ALLOW_SMALL_D=1`，120→128）全 task 通过；
+  - `--cuda-impl native --D 120`（当时需 `FFPA_CUDA_ALLOW_SMALL_D=1`，120→128；现 small-D 默认已开）全 task 通过；
   - `--cuda-impl tma --D 120/328` 通过（TMA OOB 零填充路径，D=328 self-attn 2.14x）；
   - 回归：`test_ffpa_fwd.py` 503 passed（新增 `test_native_head_dim_pad_*`
     40 项全过；`test_ffpa_fp8.py` 85 / `test_ffpa_fp4.py` 61 全过）。
     当时的 `triton_small_d_default_falls_back_to_sdpa` 1 项失败后经查为
     shell env 污染（残留 `FFPA_TRITON_ALLOW_SMALL_D=1`）+ 测试未自封闭，
     非代码缺陷；已加 `monkeypatch.delenv` 修复（06e23fe），全量 504 passed 0 failed。
+   （该用例现已拆为 `triton_small_d_disabled_falls_back_to_sdpa` 与
+   `triton_small_d_default_uses_triton` 两个用例；small-D gate 默认已翻转为 1。）
 
 ---
 
@@ -2153,7 +2155,7 @@ atom 契约、perm 合法性）先用 **host 端 cute layout 探针**（`nvcc` �
 
 **构建提醒**：`bash build.sh --arch sm_120f --headdim <list> --ext all --jobs 64`；
 默认 headdim 集 = 64 倍数 ∈ [320,1024]，**覆盖 64-256 与 split-D 端点必须显式传**；
-sm_120f（非 120a）才有 setmaxnreg；small-D 测试需 `FFPA_CUDA_ALLOW_SMALL_D=1`。
+sm_120f（非 120a）才有 setmaxnreg；small-D 测试默认已启用（`FFPA_CUDA_ALLOW_SMALL_D` 默认 `1`，显式 `=0` 才回退 SDPA）。
 
 ### FC-15：sm_89 fp8 hybrid（fp16 早行 + fp8 晚行）
 

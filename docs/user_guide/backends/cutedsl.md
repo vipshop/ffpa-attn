@@ -28,7 +28,7 @@ public config class; `ffpa_attn.cute` is the internal package name.
 |---|---|---|
 | sm_100a (`CC == 10.0`) | `tcgen05` 2-CTA D=512 forward + backward (TMEM accumulators) | `head_dim == head_dim_v == 512` exactly |
 | sm_90a (Hopper) | SM90 specialized kernels | `320 <= D <= 512` (symmetric q/k/v head dim) |
-| every other supported arch (sm_80+) | generic SM80 Split-D kernel | `320 <= D <= 1024` (`D % 32 == 0`) |
+| every other supported arch (sm_80+) | generic SM80 Split-D kernel | `64 <= D <= 1024` (`D % 32 == 0`; with `FFPA_CUTE_ALLOW_SMALL_D=0` the lower bound returns to 320) |
 
 The dense entry (`ffpa_attn_func(..., backend="cutedsl")`) re-views the
 SDPA `[B, H, N, D]` inputs into the CuTe-native `[B, N, H, D]` layout as a
@@ -58,7 +58,7 @@ generic backward.
 | Constraint | Detail |
 |---|---|
 | GPU | `sm >= 80`. CC 10.0 gets the dedicated D=512 path, SM90 the specialized kernels, other supported archs use the SM80 fallback. SM120 and other Blackwell minors have no dedicated path yet. |
-| Dense head dim | `320 <= D <= 1024` (`D % 32 == 0` in the SM80 fallback). |
+| Dense head dim | `64 <= D <= 1024` (`D % 32 == 0` in the SM80 fallback). Small-D (`D <= 256`) runs the SM80 Split-D kernels by default; set `FFPA_CUTE_ALLOW_SMALL_D=0` to restore the SDPA fallback. |
 | SM90 specialized range | `320 <= D <= 512`, symmetric q/k/v head dim. |
 | SM100 dedicated range | `head_dim == head_dim_v == 512`, dense or packed varlen with **both** `cu_seqlens`, fp16/bf16, causal (bottom-right aligned) or non-causal, MHA/GQA/MQA via zero-stride broadcast. Rows with no legal key produce `O = 0` / `LSE = -inf`, and exactly zero gradient backward. |
 | Dtype | fp16 / bf16 only. |

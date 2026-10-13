@@ -69,7 +69,7 @@ flowchart TD
     B -- 不满足 --> D["FFPAAttnMeta 全链<br/>(autograd Function + 校验)"]
     C --> E{meta.fallback ?}
     D --> E
-    E -- D≤256 未开 small-D env / D>1024 /<br/>8≤Nq<512 / Nkv<512 / grad 等 --> F["SDPA fallback<br/>(torch._C._nn.sdpa)"]
+    E -- D≤256 显式关闭 small-D env / D>1024 /<br/>8≤Nq<512 / Nkv<512 / grad 等 --> F["SDPA fallback<br/>(torch._C._nn.sdpa)"]
     E -- 通过 --> G["_fwd_cuda torch op<br/>(cuda/__init__.py)"]
     G --> H["ffpa_api.cc<br/>dtype/acc/pad 分发 → generated per-headdim 入口"]
     H --> I["launch_ffpa_attn_fwd_template<br/>(csrc/cuffpa/launch/router.cuh)"]
@@ -182,7 +182,7 @@ flowchart LR
 1. `_ffpa_attn_forward_cuda` 已编译（`ENABLE_FFPA_CUDA_IMPL=1`）
 2. `torch.is_grad_enabled()` 为 False
 3. 非 `bf16 + acc='f16'`（无 bf16-acc MMA PTX，meta 层也强制拒绝）
-4. small-D 路由：`D ≤ 256` 且未设 `FFPA_CUDA_ALLOW_SMALL_D=1` → decline（SDPA）
+4. small-D 路由：`D ≤ 256` 且显式设 `FFPA_CUDA_ALLOW_SMALL_D=0` → decline（SDPA）；默认（未设或 `=1`）走 CUDA kernel
 5. `D > 1024` → decline
 6. `8 ≤ Nq < 512` 或 `Nkv < 512` → decline（短序列不划算；`Nq ∈ [1,8)` 不 decline，可走 native decode）
 7. `tensor_layout='NHD'` 时须 `is_nhd_supported(D)`：fp4 `D≤256`；fp8 `D≤224`；fp16 `D≤128 and enable_tma and enable_cute`（persist-D 专属能力）
@@ -192,7 +192,7 @@ flowchart LR
 ### 2.3 全链（非 fast path）的 SDPA fallback 条件（`meta.fallback`）
 
 `sdpa` backend 恒 fallback；`cutedsl` 的硬件/形状不支持 fallback；其余统一判定：
-`D≤256 small-D`（同上 env 门控）、`D > 1024`、`8 ≤ Nq < 512`、`Nkv < 512`。
+`D≤256 small-D`（同上 env 门控：默认走后端 kernel，仅显式 `=0` 回退）、`D > 1024`、`8 ≤ Nq < 512`、`Nkv < 512`。
 
 ### 2.4 Backward
 
@@ -647,8 +647,8 @@ softmax_scale 恒按真实 D（Python 解析 `1/sqrt(D_og)`）。
 
 | env | 作用 |
 |---|---|
-| `FFPA_CUDA_ALLOW_SMALL_D=1` | 允许 CUDA backend 跑 D≤256（否则 SDPA fallback） |
-| `FFPA_CUTE_ALLOW_SMALL_D` / `FFPA_TRITON_ALLOW_SMALL_D` | 同上，cutedsl/triton |
+| `FFPA_CUDA_ALLOW_SMALL_D` | 默认 `1`：CUDA backend 跑 D≤256（未编译 headdim 直接报错）；显式 `=0` 恢复 SDPA fallback |
+| `FFPA_CUTE_ALLOW_SMALL_D` / `FFPA_TRITON_ALLOW_SMALL_D` | 同上，默认 `1`，cutedsl/triton |
 | `FFPA_FP8_FORCE_KERNEL=split_d\|m4n2` | 强制 fp8 split-D kernel A/B（224<D≤1024）（debug build only） |
 | `FFPA_FP8_PQUANT_PER_ROW=1` | per-row P 量化（满量程，禁 lazy rescale）（debug build only） |
 | `FFPA_FP4_PAD_TORCH=1` | fp4 pad 走 torch 物化路径（A/B 对照）（debug build only） |
@@ -665,7 +665,7 @@ softmax_scale 恒按真实 D（Python 解析 `1/sqrt(D_og)`）。
 ### 10.2 bench CLI（`python -m ffpa_attn.bench`）
 
 - `--backend cuda --cuda-impl {auto,native,tma,cute,cute_tma,cute_tma_fp8,fp8, cute_tma_fp4,fp4, ...}`；fp8 变体：`fp8_smk`（smooth-k）、`fp8_smv`（smooth-v only）、`fp8_smkv`、`*_qk_int8` 后缀（int8 QK）。
-- small-D（≤256）须 `FFPA_CUDA_ALLOW_SMALL_D=1`；`--D 128 --N 16384` 显式指定避免未编译 headdim 报错。
+- small-D（≤256）默认走 CUDA kernel（`FFPA_CUDA_ALLOW_SMALL_D` 默认 `1`，显式 `=0` 才回退 SDPA）；`--D 128 --N 16384` 显式指定避免未编译 headdim 报错。
 - `--pre-heat`（默认 0）：5090 功耗墙降频下的公平预热（先跑 5 次 SDPA 拉时钟）；单顺序 bench 不可信，用 paired-window + median。
 - **横向对比脚本**（仓库根相对路径）：`bench/bench_fp8.py` = FFPA-FP8 vs SageAttention2 vs SDPA(FA2) forward（self/causal/GQA/cross-dense/non-aligned，精度参考 bf16 SDPA-FA2）；`bench/bench_fp4.py` = FFPA-FP4 vs SageAttention3（NVFP4）vs SDPA（端到端含各自前处理）。二者用于与 sage 2/3、sdpa 的**性能/精度横向对比**；`ffpa_attn.bench` CLI（上述）用于**最终 e2e 验收**。
 
@@ -697,7 +697,7 @@ bash ./build.sh --arch sm_120f --headdim <list> --ext all --jobs 64
 
 - Triton：唯一支持 backward + additive mask 梯度的活跃 backend；sm90 专用 kernel 变体。
 - CuTeDSL（Python CuTe）：sm90/sm100；不支持 attn_mask/dropout（显式 raise）；大 D 512 变体。
-- SDPA：small-D / 短序列 / D>1024 的统一回退。
+- SDPA：短序列 / D>1024 的统一回退；small-D 仅在后端 gate 显式设 `0` 时回退。
 
 ### 10.5 参考 memory
 

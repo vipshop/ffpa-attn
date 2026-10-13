@@ -50,9 +50,10 @@ e.g. the CUDA forward kernels with a Triton backward.
 
 Notes:
 
-- Headdim ranges above are the FFPA-tuned ranges. FFPA also computes
-  D<=256 with every backend when the matching `FFPA_*_ALLOW_SMALL_D=1`
-  escape hatch is set (see [Automatic SDPA fallback](#automatic-sdpa-fallback)).
+- Headdim ranges above are the FFPA-tuned ranges. Small-D (`D<=256`) also
+  runs every backend by default; set the matching
+  `FFPA_{CUDA,TRITON,CUTE}_ALLOW_SMALL_D=0` to restore the SDPA delegation
+  (see [Automatic SDPA fallback](#automatic-sdpa-fallback)).
 - The CUDA FP8 / FP4 rows take fp16/bf16 activations and quantize
   Q/K/V inside the kernel; see the [FP8 / FP4 guide](../quantized.md).
 - `NHD zero-copy` means the kernel consumes diffusers-style
@@ -67,7 +68,7 @@ requested shape/device is outside a backend's contract:
 
 | Condition | Behavior |
 |---|---|
-| `D <= 256` (small-D) | SDPA, unless `FFPA_CUDA_ALLOW_SMALL_D=1` / `FFPA_TRITON_ALLOW_SMALL_D=1` / `FFPA_CUTE_ALLOW_SMALL_D=1` |
+| `D <= 256` (small-D) | the selected backend's kernels by default; SDPA only when `FFPA_CUDA_ALLOW_SMALL_D=0` / `FFPA_TRITON_ALLOW_SMALL_D=0` / `FFPA_CUTE_ALLOW_SMALL_D=0` is set explicitly |
 | `D > 1024` | SDPA |
 | `8 <= Nq < 512` or `Nkv < 512` (short sequences) | SDPA (`Nq in [1, 8)` still uses the native decode path) |
 | CuTe-DSL hardware/shape mismatch | SDPA |

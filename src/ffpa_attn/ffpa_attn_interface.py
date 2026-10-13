@@ -6,8 +6,10 @@ The CUDA and Triton backend packages register forward kernels as
 
 Backward pass delegates to Triton FFPA backward or PyTorch SDPA backward
 functions, routing by headdim and user-selected backend.
-Small-D directly delegates to ``torch.nn.functional.scaled_dot_product_attention``;
-large-D forward continues to use the FFPA Triton kernel by default, with a
+Small-D (``D <= 256``) runs the selected backend's kernels by default and
+delegates to ``torch.nn.functional.scaled_dot_product_attention`` only when
+the matching ``FFPA_{CUDA,TRITON,CUTE}_ALLOW_SMALL_D`` flag is set to ``0``.
+Large-D forward continues to use the FFPA Triton kernel by default, with a
 legacy optional CUDA forward backend available only when compiled in.
 
 When the caller opts into the CuTeDSL backend (``forward_backend='cutedsl'``)
@@ -101,13 +103,16 @@ def ffpa_attn_func(
   (``Nkv >= Nq`` required).
 
   Backward pass is supported via :class:`FFPAAttnFunc`. The public API falls
-  back to SDPA for cases FFPA does not currently support directly (small-D,
-  ``D > 1024``, and unsupported large-D dropout), and otherwise keeps the
-  existing FFPA forward plus SDPA/FFPA backward routing. Large-D Triton forward
-  and backward support explicit additive ``attn_mask`` gradients.
-  ``forward_backend`` only affects the large-D path and is accepted as an
-  FFPA-specific keyword inside ``**kwargs`` so the explicit signature remains
-  aligned with :func:`torch.nn.functional.scaled_dot_product_attention`.
+  back to SDPA for cases FFPA does not currently support directly (``D > 1024``,
+  short sequences, and unsupported large-D dropout). Small-D (``D <= 256``)
+  runs the selected backend by default and falls back only when the matching
+  ``FFPA_{CUDA,TRITON,CUTE}_ALLOW_SMALL_D`` flag is set to ``0``. Otherwise
+  the existing FFPA forward plus SDPA/FFPA backward routing is kept. Large-D
+  Triton forward and backward support explicit additive ``attn_mask``
+  gradients. ``forward_backend`` selects the kernel family for both the
+  large-D and small-D paths and is accepted as an FFPA-specific keyword
+  inside ``**kwargs`` so the explicit signature remains aligned with
+  :func:`torch.nn.functional.scaled_dot_product_attention`.
 
   :param query: Query tensor with layout ``[B, Nh_q, Nq, D]``; dtype must be
       ``torch.float16`` or ``torch.bfloat16`` and match ``key`` / ``value``.

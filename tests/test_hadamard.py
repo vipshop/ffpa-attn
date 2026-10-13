@@ -5,13 +5,11 @@ the fp8/fp4 output error must stay in the same order with the switch on;
 a wiring/indexing bug breaks orthogonality and blows the error up.
 """
 
-import os
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-os.environ.setdefault("FFPA_CUDA_ALLOW_SMALL_D", "1")
+# D=128 rides the small-D path, which dispatches to the CUDA kernels by default.
 
 from ffpa_attn import ffpa_attn_func
 from ffpa_attn.functional import CUDABackend
