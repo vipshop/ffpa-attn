@@ -240,7 +240,7 @@ commit_and_push() {
     fail "the index commit is local but the push was rejected; reconcile and push it by hand:
   git -C $SITE_REPO pull --rebase && git -C $SITE_REPO push"
   fi
-  echo "[publish_index] pushed; the index serves at $SITE_URL/$PREFIX/whl/$CHANNEL/"
+  echo "[publish_index] pushed; the index serves at ${SITE_URL%/}/${PREFIX:+$PREFIX/}whl/$CHANNEL/"
 }
 
 if [[ "$INDEX_ONLY" == "0" ]]; then
