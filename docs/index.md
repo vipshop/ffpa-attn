@@ -400,7 +400,7 @@ Apache License 2.0
 - [cache-dit](https://github.com/vipshop/cache-dit)
 - [flash-attention](https://github.com/Dao-AILab/flash-attention)
 - [SageAttention](https://github.com/thu-ml/sageattention)
-- [LeetCUDA](https://github.com/vipshop/LeetCUDA)
+- [LeetCUDA](https://github.com/xlite-dev/LeetCUDA)
 - [flashinfer](https://github.com/flashinfer-ai/flashinfer)
 - [quack](https://github.com/Dao-AILab/quack)
 - [cutlass](https://github.com/NVIDIA/cutlass)
