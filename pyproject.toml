@@ -3,8 +3,8 @@
 name = "ffpa-attn"
 dynamic = ["version"]
 requires-python = ">=3.10"
-authors = [{name = "DefTruth, Butterfingrz"}]
-maintainers = [{name = "DefTruth, Butterfingrz"}]
+authors = [{name = "DefTruth, Butterfingrz and vipshop.com"}]
+maintainers = [{name = "DefTruth, Butterfingrz and vipshop.com"}]
 description = "🤖FFPA: Kernel Library for Large Headdim Attention."
 readme = "README.md"
 license = {text = "Apache-2.0"}
