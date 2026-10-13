@@ -68,6 +68,10 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          # Resolve the package from the sources instead of an installed
+          # distribution: the doc builder never installs ffpa-attn (and thus
+          # never pulls torch / ray / cutlass-dsl / the CUDA extension).
+          paths: [src]
           options:
             docstring_style: sphinx
             show_source: false

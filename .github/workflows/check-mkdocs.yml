@@ -56,13 +56,11 @@ jobs:
           echo "✅ Build configuration file (pyproject.toml) found."
 
       - name: Install Only MkDocs Dependencies
-        # Skip building the CUDA C++ extension on the CI runner (no nvcc).
-        # Install CPU-only torch + the documentation toolchain so mkdocstrings
-        # can import ``ffpa_attn`` to extract docstrings, while
-        # FFPA_SKIP_CUDA_EXT=1 keeps setup.py from invoking nvcc.
+        # mkdocstrings resolves ``ffpa_attn`` from the sources (``paths`` in
+        # mkdocs.yml), so the package itself -- and therefore torch, ray and
+        # the CUDA extension -- is never installed on the docs runner.
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          FFPA_SKIP_CUDA_EXT=1 pip install ".[docs]"
+          pip install -r docs/requirements.txt
 
       # Build MkDocs documentation with strict mode and fail it if the
       # logs contain 'WARNING', 'aborted', 'ERROR', or do not contain

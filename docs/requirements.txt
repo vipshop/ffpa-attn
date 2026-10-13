@@ -1,0 +1,16 @@
+# Read the Docs / MkDocs site dependencies.
+#
+# The site build reads the package sources statically: mkdocstrings-python
+# resolves ``src/ffpa_attn`` through the ``paths`` option in ``mkdocs.yml``,
+# so neither ffpa-attn nor its runtime dependencies (torch, ray,
+# nvidia-cutlass-dsl, ...) have to be installed on the doc builder.
+#
+# Keep the pinned versions in sync with the ``docs`` extra in pyproject.toml
+# (that extra stays for local developer installs).
+mkdocs==1.6.1
+mkdocs-material==9.7.1
+mkdocstrings-python
+mkdocs-callouts
+# mkdocstrings formats multi-line signatures with Black (or Ruff); pinning it
+# keeps the rendered API page identical across builders.
+black

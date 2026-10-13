@@ -27,6 +27,9 @@ bin
 src/ffpa_attn/_version.py
 build*
 *.txt
+# The docs-builder dependency set must stay in the repository (Read the Docs
+# installs it via ``python.install.requirements``).
+!docs/requirements.txt
 site
 .plans
 docs/paper

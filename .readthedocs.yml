@@ -7,18 +7,14 @@ build:
   os: ubuntu-22.04
   tools:
     python: "3.12"
-  jobs:
-    post_checkout:
-      # setuptools-scm needs full git history to derive the version from tags.
-      - git fetch --unshallow || true
-    install:
-      # Install CPU-only PyTorch first so mkdocstrings can import ffpa_attn
-      # to extract docstrings from ``ffpa_attn.ffpa_attn_func``.
-      - pip install torch --index-url https://download.pytorch.org/whl/cpu
-      # Skip building the CUDA C++ extension on the RTD runner (no nvcc); the
-      # FFPA_SKIP_CUDA_EXT=1 flag tells setup.py to install only the Python
-      # wrapper, which is sufficient for mkdocstrings.
-      - FFPA_SKIP_CUDA_EXT=1 pip install ".[docs]"
+
+# The site build only needs the MkDocs toolchain. mkdocstrings reads the
+# ``src/ffpa_attn`` sources statically (``paths`` in mkdocs.yml), so
+# ffpa-attn itself is never installed -- no torch, no ray, no CUDA extension
+# and no setuptools-scm version derivation (hence no full git checkout).
+python:
+  install:
+    - requirements: docs/requirements.txt
 
 mkdocs:
   configuration: mkdocs.yml
