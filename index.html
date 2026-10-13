@@ -12,7 +12,7 @@
       the CUDA 13 toolkit, so pick the CUDA your torch was built against
       (<code>python -c "import torch; print(torch.version.cuda)"</code>):
     </p>
-    <pre>pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/</pre>
+    <pre>pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ --extra-index-url https://pypi.org/simple</pre>
     <p>
       <strong>Install torch first.</strong> These wheels are built and tested against
       <code>torch==2.11.0+cu130</code>; nothing here carries torch of its own, so pip only
@@ -20,11 +20,11 @@
       Install it from the PyTorch index you normally use, then install this package.
     </p>
     <p>
-      <code>--index-url</code> on its own is complete for a machine that already has the
-      runtime dependencies. Anything missing sends pip looking for it only here -- add
-      <code>--extra-index-url https://pypi.org/simple</code> for those, and mind the
-      paragraph above, because PyPI is also where a torch that is not the cu130 build
-      would come from.
+      The requirements come from PyPI, which is why the command carries
+      <code>--extra-index-url</code>: this index holds <code>ffpa-attn</code> alone, with no
+      dependencies and nothing else in it. Without a second index, pip would have to
+      resolve every requirement against this one directory and fail on the first that is
+      not already installed.
     </p>
     <p>
       <code>ffpa-attn</code> is the same distribution PyPI lists, built here with the CUDA
