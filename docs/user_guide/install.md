@@ -20,8 +20,7 @@ The CUDA wheel carries the whole release set of headdims compiled for two
 architectures: around 80 MB today, and it grows with that set. It is published
 as GitHub Release assets served through a static PEP 503 index -- close enough
 to PyPI's 100 MB per-file limit that publishing there would be a bet, and the
-CUDA line is meant to move on its own, one index per toolkit: `whl/cu13/` today,
-`whl/cu14/` when a build exists for it.
+CUDA line is meant to move on its own: one index per toolkit, `whl/cu13/`.
 
 ## Requirements
 

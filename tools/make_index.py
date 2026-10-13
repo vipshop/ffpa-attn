@@ -11,10 +11,9 @@ what ``--index-url`` points at::
     <out>/<prefix>/index.html                        # human landing page
     <out>/.nojekyll                                  # GitHub Pages runs Jekyll otherwise
 
-One directory per CUDA channel: ``whl/cu13/`` today, ``whl/cu14/`` when a build
-exists for it. A channel is entirely a matter of which ``--index-url`` a user
-passes -- the project name is the same everywhere, so a requirement does not
-change with the toolkit.
+One directory per CUDA channel: ``whl/cu13/`` today. A channel is entirely a
+matter of which ``--index-url`` a user passes -- the project name is the same
+everywhere, so a requirement does not change with the toolkit.
 
 Anchors point at the release assets (PEP 503 puts no constraint on where the
 files live) and carry ``#sha256=``, which pip enforces. The output tree is
