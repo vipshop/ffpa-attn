@@ -39,35 +39,41 @@ CUDA line is meant to move on its own, one index per toolkit: `whl/cu13/` today,
 
 ```bash
 python -c "import torch; print(torch.__version__, torch.version.cuda)"  # expect ...+cu130 13.0
-pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
+pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
+  --extra-index-url https://pypi.org/simple
 ```
 
-Install torch **first**, from the PyTorch index you normally use:
+Both indexes are there on purpose: ours holds the wheel, PyPI supplies what it
+depends on. Install torch **first**, from the PyTorch index you normally use --
+the same two-index command then resolves everything else:
 
 ```bash
 pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu130
-pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
+pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
+  --extra-index-url https://pypi.org/simple
 ```
 
 > [!NOTE]
-> The index serves `ffpa-attn` itself: `pip install ffpa-attn` with it means the
-> CUDA build (`0.2.4+cu13`), while the same command without it means the
-> pure-Python build from PyPI.
+> The CUDA index carries `ffpa-attn` alone -- no dependencies, and nothing else
+> -- so it cannot shadow anything, and `pip install ffpa-attn` with it means the
+> CUDA build (`0.2.4+cu13`) while the same command with no index means the
+> pure-Python build from PyPI. Where both indexes offer `ffpa-attn`, ours wins:
+> a local version sorts above the plain release, which is also why an already
+> installed pure-Python wheel no longer satisfies the requirement as-is.
+>
+> Leave `--extra-index-url` off and pip resolves the requirements against our
+> index alone, failing on the first one that is not already installed. That is
+> the one trade-off of an index that carries a single project.
 
 > [!WARNING]
-> The index carries no dependencies. pip resolves only what is already
-> installed, so on a fresh environment add
-> `--extra-index-url https://pypi.org/simple` -- and pin torch explicitly
-> (`ffpa-attn` requires `torch>=2.10.0`, so PyPI's build, which is not the cu130
-> one, would otherwise be a valid candidate to satisfy it):
+> `ffpa-attn` requires `torch>=2.10.0`, so if torch is not installed yet, PyPI's
+> build -- which is not the cu130 one -- is a valid candidate for it. Install
+> torch first, as above, or pin it in the same command:
 >
 > ```bash
 > pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
 >   --extra-index-url https://pypi.org/simple "torch==2.11.0"
 > ```
->
-> Adding PyPI to the candidate set cannot pull the pure-Python wheel instead:
-> `0.2.4+cu13` sorts above `0.2.4`.
 
 > [!WARNING]
 > Going back to the pure-Python build is a reinstall, not a second install --

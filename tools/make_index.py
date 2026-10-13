@@ -260,9 +260,10 @@ def _render_landing(
   """The human landing page; index_base is the URL of the channel directory."""
   base = index_base.rstrip("/")
   commands = "\n".join(
-    f"pip install {PROJECT} --index-url {base}/{channel}/"
-    for channel in channels
+    f"pip install {PROJECT} --index-url {base}/{channel}/ "
+    "--extra-index-url https://pypi.org/simple" for channel in channels
   )
+  local_versions = ", ".join(f"<code>+{channel}</code>" for channel in channels)
   platforms: set[str] = set()
   rows: list[str] = []
   for channel in channels:
@@ -289,15 +290,15 @@ def _render_landing(
       Install it from the PyTorch index you normally use, then install this package.
     </p>
     <p>
-      <code>--index-url</code> on its own is complete for a machine that already has the
-      runtime dependencies. Anything missing sends pip looking for it only here -- add
-      <code>--extra-index-url https://pypi.org/simple</code> for those, and mind the
-      paragraph above, because PyPI is also where a torch that is not the cu130 build
-      would come from.
+      The requirements come from PyPI, which is why the command carries
+      <code>--extra-index-url</code>: this index holds <code>{PROJECT}</code> alone, with no
+      dependencies and nothing else in it. Without a second index, pip would have to
+      resolve every requirement against this one directory and fail on the first that is
+      not already installed.
     </p>
     <p>
       <code>{PROJECT}</code> is the same distribution PyPI lists, built here with the CUDA
-      extension compiled in and tagged with the local version <code>+{channel}</code>. That
+      extension compiled in and tagged with the local version {local_versions}. That
       suffix is what keeps the two apart: it sorts above the plain release, so pip takes
       this build whenever both indexes are candidates, and a pure-Python wheel of the same
       release that is already installed no longer satisfies the requirement unchanged.
