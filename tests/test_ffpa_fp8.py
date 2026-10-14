@@ -74,7 +74,7 @@ def _bench_ms(fn, warmup=10, iters=30) -> float:
   return min(ts) * 1e3
 
 
-@pytest.mark.parametrize("D", [64, 128])
+@pytest.mark.parametrize("D", [64, 128, 192])
 @pytest.mark.parametrize(
   "dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"]
 )
@@ -89,6 +89,29 @@ def test_fp8_forward_parity_vs_fp32_sdpa(D, dtype):
   ref = F.scaled_dot_product_attention(
     q.float(), k.float(), v.float(), is_causal=False
   ).to(dtype)
+  torch.testing.assert_close(out, ref, atol=4e-2, rtol=4e-2)
+
+
+def test_fp8_persist_d_q_reuse_race():
+  """D=192 is the kBc=64 (< kBr=128) persist-D window (RFC FC-17).
+
+  There the Q tile area holds TWO K stages while only the first one is guarded
+  by ``q_consumed``; before the guard was moved, the prologue's K TMA
+  overwrote the live Q tile mid-s2r and O moved on the order of |V|. The
+  fixtures must stay UNCAPPED: at *0.5 the corruption is still ~8x the fp8
+  noise floor but lands inside the parity tolerance, so the scaled sweep above
+  cannot see it.
+  """
+  torch.manual_seed(0)
+  B, H, N, D = 1, 32, 8192, 192
+  q = torch.randn(B, H, N, D, dtype=torch.bfloat16, device="cuda")
+  k = torch.randn(B, H, N, D, dtype=torch.bfloat16, device="cuda")
+  v = torch.randn(B, H, N, D, dtype=torch.bfloat16, device="cuda")
+
+  out = ffpa_attn_func(q, k, v, is_causal=False, forward_backend=_fp8_backend())
+  ref = F.scaled_dot_product_attention(
+    q.float(), k.float(), v.float(), is_causal=False
+  ).to(torch.bfloat16)
   torch.testing.assert_close(out, ref, atol=4e-2, rtol=4e-2)
 
 

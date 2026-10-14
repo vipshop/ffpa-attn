@@ -55,12 +55,14 @@ The knob reference is in [FP8 / FP4 Attention](quantized.md), the per-family
 dispatch table in [CUDA Backend](backends/cuda.md).
 
 > [!WARNING]
-> **FP8 at `D=192` currently returns wrong results.** The error is confined to
-> a subset of rows and is a correctness bug, not a precision drift; it was
-> reproduced on `sm_120` in this wheel, and the sm_89 fp8 path shares the same
-> persist-D code. `D=64` and `D=128` are unaffected. Until it is fixed, keep
-> FP8 off `D=192` -- use fp16/bf16 there, or the fp4 family if it fits your
-> model.
+> **FP8 at `D=192` returned wrong results in wheels up to `0.2.4`.** The error
+> was confined to a subset of rows and was a correctness bug, not a precision
+> drift: a shared-memory reuse race in the `sm_120` persist-D kernel, which
+> covers the whole `D > 128` window (`D=160/192/224`), not just `192`. `D=64`
+> and `D=128` were never affected, and neither is the `sm_89` fp8 path (its
+> `kBr == kBc` geometry cannot reuse more than one K stage). It is fixed on
+> `dev` (the `0.2.5` dev series); use a wheel built at `0.2.5` or later, and
+> keep FP8 off `D=192` on `0.2.4` and older.
 
 ## Install the CUDA build
 
