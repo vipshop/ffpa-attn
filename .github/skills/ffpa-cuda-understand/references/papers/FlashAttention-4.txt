@@ -1042,5 +1042,3 @@ For completeness, we also include performance numbers for the deterministic back
 without causal masking in Fig. 8, side by side with causal masking.
 
 20
-
-

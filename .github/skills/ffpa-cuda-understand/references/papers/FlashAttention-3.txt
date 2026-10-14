@@ -2143,5 +2143,3 @@ Sequence length
 Figure 9: Attention forward speed (FP8) on H100 GPU
 
 22
-
-
