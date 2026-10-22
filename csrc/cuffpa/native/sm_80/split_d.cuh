@@ -136,13 +136,16 @@ __global__ void __launch_bounds__(WARP_SIZE* kMmaTileSeqLenQ* kMmaTileSeqLenK)
   const int kv_head_idx = Nh_id / group_size;
   // d_og: real gmem row width of Q/K/V (== kHeadDim unless the head_dim pad
   // path shrunk the rows); O is always kHeadDim-wide (api-layer padded O).
-  const int Q_gmem_offset =
-      ((Nb_id * Nh * Nq * d_og) + (Nh_id * Nq * d_og));  // Q [seqlen,d]
-  const int K_gmem_offset =
-      ((Nb_id * Nh_kv * Nkv * d_og) + (kv_head_idx * Nkv * d_og));  // K
-  const int V_gmem_offset = K_gmem_offset;                          // V
-  const int O_gmem_offset =
-      ((Nb_id * Nh * Nq * kHeadDim) + (Nh_id * Nq * kHeadDim));  // O [seqlen,d]
+  // int64 plane bases: (b*H+h)*N*D wraps int32 past 2^31 elements (~4 GiB
+  // fp16) — PR #387 sibling; the prefill helpers take long long offsets.
+  const long long Q_gmem_offset =
+      ((long long)Nb_id * Nh * Nq * d_og) + ((long long)Nh_id * Nq * d_og);
+  const long long K_gmem_offset = ((long long)Nb_id * Nh_kv * Nkv * d_og) +
+                                  ((long long)kv_head_idx * Nkv * d_og);  // K
+  const long long V_gmem_offset = K_gmem_offset;                          // V
+  const long long O_gmem_offset =
+      ((long long)Nb_id * Nh * Nq * kHeadDim) +
+      ((long long)Nh_id * Nq * kHeadDim);  // O [seqlen,d]
 
   // int load_gmem_Q_Br = Q_tile_id * Br + load_smem_Q_Br;
   // if ((Q_tile_id * Br + (threadIdx.x / (kNumThreads / Br))) >= Nq) return;

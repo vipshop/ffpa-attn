@@ -120,16 +120,18 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   auto g2s_thr_qk = g2s_copy_qk.get_slice(tid);
   auto g2s_thr_v = g2s_copy_v.get_slice(tid);
 
-  // Gmem tensors: [total_rows, kHeadDim] row-major.
-  auto mQ = make_tensor(make_gmem_ptr(Q + q_row_offset * kHeadDim),
-                        make_shape(Nq, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mK = make_tensor(make_gmem_ptr(K + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mV = make_tensor(make_gmem_ptr(V + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
+  // Gmem tensors: [total_rows, kHeadDim] row-major. int64 base offsets
+  // (row_offset * kHeadDim overflows int32 past 2^31 elements): see
+  // persist_d.cuh.
+  auto mQ = make_tensor(
+      make_gmem_ptr(Q + static_cast<long>(q_row_offset) * kHeadDim),
+      make_shape(Nq, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mK = make_tensor(
+      make_gmem_ptr(K + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mV = make_tensor(
+      make_gmem_ptr(V + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
 
   auto g2s_load_q = [&](int d_chunk, int stage) {
     auto gQ = local_tile(mQ, Shape<Int<kBr>, Int<kQKDChunk>>{},
@@ -493,8 +495,9 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   // Phase 5: Epilogue. O /= row_sum, R->G per v_chunk (BHND rows); only
   // n_warp==0 writes LSE (both N-warps share the same Q rows).
   {
-    const int O_gmem_offset =
-        (Nb_id * Nh * Nq * kHeadDim) + (Nh_id * Nq * kHeadDim);
+    const long long O_gmem_offset =
+        static_cast<long long>(Nb_id) * Nh * Nq * kHeadDim +
+        static_cast<long long>(Nh_id) * Nq * kHeadDim;
     auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                           make_shape(Nq, Int<kHeadDim>{}),
                           make_stride(Int<kHeadDim>{}, _1{}));

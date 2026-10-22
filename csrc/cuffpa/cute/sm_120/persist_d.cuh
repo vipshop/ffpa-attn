@@ -788,9 +788,16 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_sm120(
     } else {
       // Tail tile: rows past Nq would alias the next head/batch in the
       // flattened TMA space, so store R->G with a row guard.
-      const int O_gmem_offset = nhd_out ? ((Nb_id * Nq) * Nh + Nh_id) * kHeadDim
-                                        : (Nb_id * Nh + Nh_id) * Nq * kHeadDim;
-      const int o_row_stride = nhd_out ? Nh * kHeadDim : kHeadDim;
+      // int64 base/stride: (b*H+h)*Nq*kHeadDim crosses INT32_MAX once O
+      // exceeds 2^31 elements (~4 GiB fp16) and wraps the tail R->G store
+      // to a negative offset (silent corruption). The NHD tile offset
+      // (row * Nh*kHeadDim) shares the threshold, so the row stride must
+      // promote with the base (delta_s sibling: PR #387).
+      const long long O_gmem_offset =
+          nhd_out ? ((long long)Nb_id * Nq * Nh + Nh_id) * kHeadDim
+                  : (long long)(Nb_id * Nh + Nh_id) * Nq * kHeadDim;
+      const long long o_row_stride =
+          nhd_out ? (long long)Nh * kHeadDim : kHeadDim;
       auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                             make_shape(Nq, Int<kHeadDim>{}),
                             make_stride(o_row_stride, _1{}));
