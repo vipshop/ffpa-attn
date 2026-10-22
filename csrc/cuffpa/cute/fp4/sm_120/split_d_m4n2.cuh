@@ -990,10 +990,14 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
           }
         }
       } else {
-        const int O_gmem_offset =
-            nhd_out ? ((Nb_id * Nq + q_start_row) * Nh + Nh_id) * kHeadDim
-                    : (q_bh)*Nq * kHeadDim + q_start_row * kHeadDim;
-        const int o_row_stride = nhd_out ? Nh * kHeadDim : kHeadDim;
+        // int64 base/stride: see persist_d.cuh (PR #387 companion fix).
+        const long long O_gmem_offset =
+            nhd_out ? (((long long)Nb_id * Nq + q_start_row) * Nh + Nh_id) *
+                          kHeadDim
+                    : (long long)q_bh * Nq * kHeadDim +
+                          (long long)q_start_row * kHeadDim;
+        const long long o_row_stride =
+            nhd_out ? (long long)Nh * kHeadDim : kHeadDim;
         auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                               make_shape(Nq - q_start_row, Int<kHeadDim>{}),
                               make_stride(o_row_stride, _1{}));

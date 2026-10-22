@@ -715,7 +715,11 @@ __global__ void quantize_fp8_perthread_q_kernel(
   const int rb = blockIdx.x;     // 64-row block
   const int bh = blockIdx.y;
   const int tid = threadIdx.x;
-  const int row = rb * 64 + (tid >> 1);
+  // long row: the write side (y_bh + row * D) is an int32 product that
+  // wraps past 2^31 elements within one (b,h) plane (N*D >= 2^31, e.g.
+  // 2.1M tokens at D=1024); every sibling quantize kernel already uses
+  // long row. The read side (row * L.s_row) promotes via s_row's long.
+  const long row = rb * 64 + (tid >> 1);
   const int half = tid & 1;
   const Element* x_bh = X + fp8_plane_base(L, bh);
   QKOutT<kQKInt8>* y_bh = Y + static_cast<long>(bh) * N * D;

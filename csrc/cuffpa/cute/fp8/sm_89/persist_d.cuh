@@ -172,12 +172,15 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 2)
   G2SCopy g2s_copy;
   auto g2s_thr = g2s_copy.get_slice(tid);
 
-  auto mQ = make_tensor(make_gmem_ptr(Q + q_row_offset * kHeadDim),
-                        make_shape(Nq, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mK = make_tensor(make_gmem_ptr(K + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
+  // int64 base offsets: row_offset * kHeadDim wraps int32 past 2^31
+  // elements (q8/k8 are 1B/elem, so ~2 GiB) — PR #387 sibling; mV already
+  // carries a static_cast<long> plane base.
+  auto mQ = make_tensor(
+      make_gmem_ptr(Q + static_cast<long>(q_row_offset) * kHeadDim),
+      make_shape(Nq, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mK = make_tensor(
+      make_gmem_ptr(K + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
   // VT is flat [B*Nh_kv*kHeadDim, Nkv] with a 16B-aligned row stride; the
   // per-(b,h) base advances by kHeadDim D-rows, i.e. kHeadDim*Nkv_pad bytes.
   auto mV = make_tensor(
@@ -559,7 +562,8 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 2)
   // ---- Epilogue: dequant, normalize, store ----
   {
     auto mO = make_tensor(
-        make_gmem_ptr(O + (Nb_id * Nh * Nq * kHeadDim) + Nh_id * Nq * kHeadDim +
+        make_gmem_ptr(O + static_cast<long long>(Nb_id) * Nh * Nq * kHeadDim +
+                      static_cast<long long>(Nh_id) * Nq * kHeadDim +
                       static_cast<long>(q_start_row) * kHeadDim),
         make_shape(Nq, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
     auto gO = local_tile(mO, Shape<Int<kBr>, Int<kHeadDim>>{},

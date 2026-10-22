@@ -107,16 +107,18 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   G2SCopy g2s_copy;
   auto g2s_thr = g2s_copy.get_slice(tid);
 
-  // Gmem tensors: [total_rows, kHeadDim] row-major.
-  auto mQ = make_tensor(make_gmem_ptr(Q + q_row_offset * kHeadDim),
-                        make_shape(Nq, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mK = make_tensor(make_gmem_ptr(K + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mV = make_tensor(make_gmem_ptr(V + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
+  // Gmem tensors: [total_rows, kHeadDim] row-major. int64 base offsets:
+  // the int32 product row_offset * kHeadDim wraps past 2^31 elements once
+  // the tensor exceeds ~4 GiB (fp16) / ~2 GiB (fp8) — PR #387 sibling.
+  auto mQ = make_tensor(
+      make_gmem_ptr(Q + static_cast<long>(q_row_offset) * kHeadDim),
+      make_shape(Nq, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mK = make_tensor(
+      make_gmem_ptr(K + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mV = make_tensor(
+      make_gmem_ptr(V + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
 
   // G2S helpers: Q once (persist), K/V per kv tile into their stage.
   auto g2s_load_q = [&]() {
@@ -437,8 +439,9 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
 
   // Phase 4: Epilogue. Normalize O, convert, store.
   {
-    const int O_gmem_offset =
-        (Nb_id * Nh * Nq * kHeadDim) + (Nh_id * Nq * kHeadDim);
+    const long long O_gmem_offset =
+        static_cast<long long>(Nb_id) * Nh * Nq * kHeadDim +
+        static_cast<long long>(Nh_id) * Nq * kHeadDim;
     auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                           make_shape(Nq, Int<kHeadDim>{}),
                           make_stride(Int<kHeadDim>{}, _1{}));

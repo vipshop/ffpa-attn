@@ -75,9 +75,11 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
   __shared__ float row_rescale[kMaxRows];
 
   // d_og: real gmem row width of Q/K/V (== kHeadDim unless head_dim padded);
-  // partial_out / O stay kHeadDim-wide.
-  const int q_base = ((Nb_id * Nh + Nh_id) * Nq) * d_og;
-  const int kv_base = ((Nb_id * Nh_kv + kv_head_idx) * Nkv) * d_og;
+  // partial_out / O stay kHeadDim-wide. long bases: kv_base reaches
+  // B*Nh_kv*Nkv*d_og, which crosses INT32_MAX for large-batch decode with
+  // long KV (e.g. B=128, H_kv=8, Nkv=32768, D=128) — PR #387 sibling.
+  const long q_base = ((long)(Nb_id * Nh + Nh_id) * Nq) * d_og;
+  const long kv_base = ((long)(Nb_id * Nh_kv + kv_head_idx) * Nkv) * d_og;
 
   // Vector constants for cp.async row loads (8×half/bf16 = 128-bit).
   constexpr int kVecRow =
@@ -289,8 +291,8 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
       __syncthreads();
     }
 
-    const int split_row_base =
-        (((Nb_id * Nh + Nh_id) * num_splits + split_id) * Nq);
+    const long split_row_base =
+        (((long)(Nb_id * Nh + Nh_id) * num_splits + split_id) * Nq);
     constexpr int kVecF32 = 4;  // 4×fp32 = 128-bit store
     static_assert(kHeadDim % kVecF32 == 0, "kHeadDim must be multiple of 4");
     constexpr int kNumVecF32 = kHeadDim / kVecF32;
@@ -313,7 +315,7 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
       // Phase 2: vectorized 128-bit store smem_out → partial_out.
       // kNumVecF32 = kHeadDim / 4 (e.g. D=512 → 128), kNumThreads=256,
       // so tid 0..127 each handles one 4×fp32 vector, covering all D elements.
-      const int partial_row_base = (split_row_base + row) * kHeadDim;
+      const long partial_row_base = (split_row_base + row) * kHeadDim;
       for (int i = tid; i < kNumVecF32; i += kNumThreads) {
         ffpa::cp_async::stg_sync_128b(
             &partial_out[partial_row_base + i * kVecF32],
@@ -364,8 +366,9 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
   __shared__ float row_max;
   __shared__ float row_inv_denom;
 
-  const int split_row_base = (((Nb_id * Nh + Nh_id) * num_splits) * Nq + row);
-  const int o_row_base = ((Nb_id * Nh + Nh_id) * Nq + row) * kHeadDim;
+  const long split_row_base =
+      ((long)(Nb_id * Nh + Nh_id) * num_splits) * Nq + row;
+  const long o_row_base = (long)((Nb_id * Nh + Nh_id) * Nq + row) * kHeadDim;
   const int lse_row_offset = (Nb_id * Nh + Nh_id) * Nq + row;
 
   if (tid == 0) {
@@ -410,7 +413,7 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
             (chunk_lse[split_row_base + split * Nq] - row_max) * FFPA_M_LOG2E);
 
         // First 128-bit load: partial_out[d..d+3].
-        const int partial_offset0 =
+        const long partial_offset0 =
             ((split_row_base + split * Nq) * kHeadDim) + d;
         uint4 v0;
         ffpa::cp_async::ldg_sync_128b(&v0, &partial_out[partial_offset0]);
@@ -421,7 +424,7 @@ __global__ void __launch_bounds__(((kHeadDim / 8 + WARP_SIZE - 1) / WARP_SIZE) *
         out3 += weight * pf0[3];
 
         // Second 128-bit load: partial_out[d+4..d+7].
-        const int partial_offset1 =
+        const long partial_offset1 =
             ((split_row_base + split * Nq) * kHeadDim) + d + 4;
         uint4 v1;
         ffpa::cp_async::ldg_sync_128b(&v1, &partial_out[partial_offset1]);

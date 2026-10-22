@@ -129,8 +129,11 @@ __global__ void __launch_bounds__(WARP_SIZE* kMmaTileSeqLenQ* kMmaTileSeqLenK +
   // row index; minor axis is the head-dim element offset.
   const int Q_major_base = (Nb_id * Nh + Nh_id) * Nq + Q_tile_id * Br;
   const int KV_major_base = (Nb_id * Nh_kv + kv_head_idx) * Nkv;
-  const int O_gmem_offset =
-      ((Nb_id * Nh * Nq * kHeadDim) + (Nh_id * Nq * kHeadDim));
+  // int64 plane base: (b*H+h)*N*kHeadDim wraps int32 past 2^31 O
+  // elements — PR #387 sibling. Q_major_base/KV_major_base above are
+  // TMA row coordinates (row space) and stay int.
+  const long long O_gmem_offset = ((long long)Nb_id * Nh * Nq * kHeadDim) +
+                                  ((long long)Nh_id * Nq * kHeadDim);
 
   // Whole-block early exit: grid may launch one extra CTA when Nq % Br != 0.
   if ((Q_tile_id * Br) >= Nq)

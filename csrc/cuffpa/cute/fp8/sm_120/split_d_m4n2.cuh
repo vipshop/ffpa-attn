@@ -816,11 +816,16 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
                                       tiled_mma_pv);
     auto r2s_thr = r2s_copy.get_slice(tid);
 
-    const int O_gmem_offset =
-        nhd_out ? ((Nb_id * Nq + q_start_row) * Nh + Nh_id) * kHeadDim
-                : (Nb_id * Nh * Nq * kHeadDim) + (Nh_id * Nq * kHeadDim) +
-                      q_start_row * kHeadDim;
-    const int o_row_stride = nhd_out ? Nh * kHeadDim : kHeadDim;
+    // int64 base/stride: int32 (b*H+h)*Nq*kHeadDim wraps past 2^31 O
+    // elements; see persist_d.cuh (PR #387 sibling).
+    const long long O_gmem_offset =
+        nhd_out
+            ? (((long long)Nb_id * Nq + q_start_row) * Nh + Nh_id) * kHeadDim
+            : (long long)Nb_id * Nh * Nq * kHeadDim +
+                  (long long)Nh_id * Nq * kHeadDim +
+                  (long long)q_start_row * kHeadDim;
+    const long long o_row_stride =
+        nhd_out ? (long long)Nh * kHeadDim : kHeadDim;
     auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                           make_shape(Nq - q_start_row, Int<kHeadDim>{}),
                           make_stride(o_row_stride, _1{}));

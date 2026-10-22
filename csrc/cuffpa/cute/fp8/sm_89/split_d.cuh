@@ -188,12 +188,14 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   // quantized buffers; V^T is the flat [B*Nh_kv*kHeadDim, Nkv_pad] plane
   // stack (per-(b,h) base advances by kHeadDim D-rows, i.e.
   // kHeadDim*Nkv_pad elements -- the FC-13 h>=1 offset bug).
-  auto mQ = make_tensor(make_gmem_ptr(Q + q_row_offset * kHeadDim),
-                        make_shape(Nq, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
-  auto mK = make_tensor(make_gmem_ptr(K + kv_row_offset * kHeadDim),
-                        make_shape(Nkv, Int<kHeadDim>{}),
-                        make_stride(Int<kHeadDim>{}, _1{}));
+  // int64 base offsets (row_offset * kHeadDim wraps int32 past 2^31
+  // elements): see persist_d.cuh.
+  auto mQ = make_tensor(
+      make_gmem_ptr(Q + static_cast<long>(q_row_offset) * kHeadDim),
+      make_shape(Nq, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
+  auto mK = make_tensor(
+      make_gmem_ptr(K + static_cast<long>(kv_row_offset) * kHeadDim),
+      make_shape(Nkv, Int<kHeadDim>{}), make_stride(Int<kHeadDim>{}, _1{}));
   auto mV = make_tensor(
       make_gmem_ptr(V + static_cast<long>(kv_bh) * kHeadDim * Nkv_pad),
       make_shape(kHeadDim, Nkv), make_stride(Nkv_pad, _1{}));
@@ -654,7 +656,8 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   // per-v_chunk dequant + R->G store on BHND; the tail tile guards rows.
   {
     auto mO = make_tensor(
-        make_gmem_ptr(O + (Nb_id * Nh * Nq * kHeadDim) + Nh_id * Nq * kHeadDim +
+        make_gmem_ptr(O + static_cast<long long>(Nb_id) * Nh * Nq * kHeadDim +
+                      static_cast<long long>(Nh_id) * Nq * kHeadDim +
                       static_cast<long>(q_start_row) * kHeadDim),
         make_shape(Nq - q_start_row, Int<kHeadDim>{}),
         make_stride(Int<kHeadDim>{}, _1{}));

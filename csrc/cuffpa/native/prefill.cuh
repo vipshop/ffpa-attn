@@ -89,9 +89,9 @@ template <const int BrOrBc, const int kTileSize, const int kHeadDim,
           const int kMmaAtomK, const int kNumThreads, const int kPad,
           typename kDataType = __half>
 __device__ __forceinline__ void cp_async_qkv_g2s(
-    uint32_t smem_base_ptr,     // QKV smem base ptr
-    const kDataType* gmem_ptr,  // QKV gmem ptr
-    const int gmem_offset,      // QKV gmem_offset
+    uint32_t smem_base_ptr,       // QKV smem base ptr
+    const kDataType* gmem_ptr,    // QKV gmem ptr
+    const long long gmem_offset,  // QKV gmem_offset (int64 plane base)
     const int n_tile_id,  // seqlen offset, Q_tile_id * Br, tile_K_seqlen * Bc
     const int d_tile_id,  // headdim offset, tile_K_d * kMmaAtomK, tile_V_d *
                           // kMmaAtomN * 2
@@ -120,7 +120,7 @@ __device__ __forceinline__ void cp_async_qkv_g2s(
   const int load_gmem_BrOrBc = (n_tile_id * BrOrBc) + load_smem_BrOrBc;
   const int load_gmem_d = (d_tile_id * kMmaAtomK) + load_smem_d;  // 0,8
   // Offset by QKV global gmem_offset.
-  const int load_gmem_addr =
+  const long long load_gmem_addr =
       (gmem_offset + load_gmem_BrOrBc * d_og + load_gmem_d);
   // Seqlen boundary predicate: rows beyond QKV_seqlen must be zero-filled.
   const bool row_valid = (load_gmem_BrOrBc < seqlen_bound);
@@ -1214,7 +1214,7 @@ template <const int Br, const int kHeadDim, const int kMmaAtomM,
           const int kOStorageAccFloat32, typename kDataType = __half>
 __device__ __forceinline__ void sync_store_o_r2g(
     kDataType* gmem_ptr,              // O gmem ptr
-    const int gmem_offset,            // O gmem global offset
+    const long long gmem_offset,      // O gmem global offset (int64 base)
     const int n_tile_id,              // curr tile id (seqlen) O_tile_id
     const int mma_tile_id,            // Q warp_QP 0~num MMAs, KV warp_KV 0
     uint32_t* R_D,                    // Final scaled O
@@ -1262,10 +1262,10 @@ __device__ __forceinline__ void sync_store_o_r2g(
         // j * kMmaAtomN;
         const int store_warp_regs_O_d = j * kMmaAtomN;
         const int store_lane_gmem_O_d = store_warp_regs_O_d;  // (0~3)*16+(0/8)
-        const int store_gmem_O_addr_0 =
+        const long long store_gmem_O_addr_0 =
             (gmem_offset + (store_lane_gmem_O_Br + 0) * kHeadDim +
              store_lane_gmem_O_d);
-        const int store_gmem_O_addr_1 =
+        const long long store_gmem_O_addr_1 =
             (gmem_offset + (store_lane_gmem_O_Br + 8) * kHeadDim +
              store_lane_gmem_O_d);
         // Row predicate: skip writes past QKV_seqlen to keep output rows

@@ -1058,10 +1058,17 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
       } else {
         // Tail tile: rows past Nq would alias the next head/batch in the
         // flattened TMA space, so store R->G with a row guard.
-        const int O_gmem_offset =
-            nhd_out ? ((Nb_id * Nq + q_start_row) * Nh + Nh_id) * kHeadDim
-                    : q_bh * Nq * kHeadDim + q_start_row * kHeadDim;
-        const int o_row_stride = nhd_out ? Nh * kHeadDim : kHeadDim;
+        // int64 base/stride: int32 (b*H+h)*Nq*kHeadDim wraps past 2^31 O
+        // elements; the NHD tile offset shares the threshold, so the row
+        // stride promotes with the base. Companion to the launcher-side
+        // layout_DS fix in PR #387 (the kernel-side tail store was missed).
+        const long long O_gmem_offset =
+            nhd_out ? (((long long)Nb_id * Nq + q_start_row) * Nh + Nh_id) *
+                          kHeadDim
+                    : (long long)q_bh * Nq * kHeadDim +
+                          (long long)q_start_row * kHeadDim;
+        const long long o_row_stride =
+            nhd_out ? (long long)Nh * kHeadDim : kHeadDim;
         auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
                               make_shape(Nq - q_start_row, Int<kHeadDim>{}),
                               make_stride(o_row_stride, _1{}));

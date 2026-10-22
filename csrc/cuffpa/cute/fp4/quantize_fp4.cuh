@@ -108,14 +108,19 @@ struct Fp4PackedVec {
 // commute and delta_s/qkm stay exact in the unrotated domain.
 template <typename T, int kHeadDim, bool kPermute, bool kSubQm, bool kSubKm,
           bool kHadamard = false>
+// int64 strides: the (b,h) plane bases (b*stride_bz + h*stride_h +
+// token*stride_seq) scale with the tensor's element count and wrap int32
+// past 2^31 elements — the PR #387 overflow class. Callers pass torch's
+// int64 strides directly.
 __global__ void fp4_quant_kernel(
     const T* __restrict__ input, uint8_t* __restrict__ output,
-    uint8_t* __restrict__ output_sf, int num_tokens, int stride_bz_input,
-    int stride_h_input, int stride_seq_input, int stride_bz_output,
-    int stride_h_output, int stride_seq_output, int stride_bz_output_sf,
-    int stride_h_output_sf, int stride_seq_output_sf,
-    const float* __restrict__ qm, int qm_stride_b, int qm_stride_h,
-    const float* __restrict__ km, int km_stride_b, int km_stride_h, int d_og) {
+    uint8_t* __restrict__ output_sf, int num_tokens, int64_t stride_bz_input,
+    int64_t stride_h_input, int64_t stride_seq_input, int64_t stride_bz_output,
+    int64_t stride_h_output, int64_t stride_seq_output,
+    int64_t stride_bz_output_sf, int64_t stride_h_output_sf,
+    int64_t stride_seq_output_sf, const float* __restrict__ qm,
+    int64_t qm_stride_b, int64_t qm_stride_h, const float* __restrict__ km,
+    int64_t km_stride_b, int64_t km_stride_h, int d_og) {
   using PackedVec = Fp4PackedVec<T>;
   constexpr int kThreadsPerToken = 4;
   // tokens/block is a launch-config choice (launcher shrinks it for large D
@@ -330,14 +335,16 @@ __global__ void fp4_quant_kernel(
 // d_og < kHeadDim (d_og%8==0): guarded loads keep pad d-rows zero in data
 // and SF.
 template <typename T, int kHeadDim>
+// int64 strides: see fp4_quant_kernel.
 __global__ void fp4_quant_trans_kernel(
     const T* __restrict__ input, uint8_t* __restrict__ output,
-    uint8_t* __restrict__ output_sf, int num_tokens, int stride_bz_input,
-    int stride_h_input, int stride_seq_input, int stride_bz_output,
-    int stride_h_output, int stride_d_output, int stride_bz_output_sf,
-    int stride_h_output_sf, int stride_d_output_sf, int d_og,
-    const float* __restrict__ vm = nullptr, int vm_stride_b = 0,
-    int vm_stride_h = 0) {
+    uint8_t* __restrict__ output_sf, int num_tokens, int64_t stride_bz_input,
+    int64_t stride_h_input, int64_t stride_seq_input, int64_t stride_bz_output,
+    int64_t stride_h_output, int64_t stride_d_output,
+    int64_t stride_bz_output_sf, int64_t stride_h_output_sf,
+    int64_t stride_d_output_sf, int d_og,
+    const float* __restrict__ vm = nullptr, int64_t vm_stride_b = 0,
+    int64_t vm_stride_h = 0) {
   using PackedVec = Fp4PackedVec<T>;
   constexpr int kTokensPerBlock =
       (kHeadDim <= 128) ? 128 : ((kHeadDim <= 768) ? 64 : 32);
@@ -497,14 +504,16 @@ __global__ void fp4_quant_trans_kernel(
 // SF layout follows BlockScaledConfig<32> (same 64x4-block formula, group
 // index = token/32).
 template <typename T, int kHeadDim>
+// int64 strides: see fp4_quant_kernel.
 __global__ void mxfp8_quant_trans_kernel(
     const T* __restrict__ input, uint8_t* __restrict__ output,
-    uint8_t* __restrict__ output_sf, int num_tokens, int stride_bz_input,
-    int stride_h_input, int stride_seq_input, int stride_bz_output,
-    int stride_h_output, int stride_d_output, int stride_bz_output_sf,
-    int stride_h_output_sf, int stride_d_output_sf, int d_og,
-    const float* __restrict__ vm = nullptr, int vm_stride_b = 0,
-    int vm_stride_h = 0) {
+    uint8_t* __restrict__ output_sf, int num_tokens, int64_t stride_bz_input,
+    int64_t stride_h_input, int64_t stride_seq_input, int64_t stride_bz_output,
+    int64_t stride_h_output, int64_t stride_d_output,
+    int64_t stride_bz_output_sf, int64_t stride_h_output_sf,
+    int64_t stride_d_output_sf, int d_og,
+    const float* __restrict__ vm = nullptr, int64_t vm_stride_b = 0,
+    int64_t vm_stride_h = 0) {
   using PackedVec = Fp4PackedVec<T>;
   constexpr int kTokensPerBlock =
       (kHeadDim <= 128) ? 128 : ((kHeadDim <= 768) ? 64 : 32);
@@ -665,12 +674,11 @@ __global__ void mxfp8_quant_trans_kernel(
 // Per-(b,h) 128-row block means of Q: qm (B,H,ceil(Nq/128),D) fp32. Tail
 // blocks average only the valid rows. Pad cols [d_og, kHeadDim) stay 0.
 template <typename T, int kHeadDim>
-__global__ void fp4_q_block_mean_kernel(const T* __restrict__ input,
-                                        float* __restrict__ qm, int num_tokens,
-                                        int stride_bz_input, int stride_h_input,
-                                        int stride_seq_input, int stride_bz_qm,
-                                        int stride_h_qm, int stride_m_qm,
-                                        int d_og) {
+// int64 strides: see fp4_quant_kernel.
+__global__ void fp4_q_block_mean_kernel(
+    const T* __restrict__ input, float* __restrict__ qm, int num_tokens,
+    int64_t stride_bz_input, int64_t stride_h_input, int64_t stride_seq_input,
+    int64_t stride_bz_qm, int64_t stride_h_qm, int64_t stride_m_qm, int d_og) {
   const int m_block = blockIdx.x;
   const int b = blockIdx.y;
   const int h = blockIdx.z;
@@ -1035,22 +1043,25 @@ inline void launch_fp4_q_block_mean_sm120(const torch::Tensor& input,
 // Staging row stride is kHeadDim+16 elements: 16-element vec aligned and
 // the +16 pad keeps the column-sum reads at 2-way bank conflicts.
 template <typename T, int kHeadDim, bool kHadamard, bool kPvMxfp8>
+// int64 strides: see fp4_quant_kernel.
 __global__ void fp4_quant_fused_qkv_kernel(
     const T* __restrict__ q_in, uint8_t* __restrict__ q_out,
     uint8_t* __restrict__ q_sf, float* __restrict__ qm_f32,
     T* __restrict__ qm_h, float* __restrict__ qm_rot_out, int q_num_tokens,
-    int q_s_bz, int q_s_h, int q_s_seq, int q_s_out_bz, int q_s_out_h,
-    int q_s_out_seq, int q_s_sf_bz, int q_s_sf_h, int q_s_sf_seq, int qm_s_bz,
-    int qm_s_h, int qm_s_m, const float* __restrict__ km, int km_s_b,
-    int km_s_h, const T* __restrict__ k_in, uint8_t* __restrict__ k_out,
-    uint8_t* __restrict__ k_sf, int k_num_tokens, int k_s_bz, int k_s_h,
-    int k_s_seq, int k_s_out_bz, int k_s_out_h, int k_s_out_seq, int k_s_sf_bz,
-    int k_s_sf_h, int k_s_sf_seq, const float* __restrict__ vm, int vm_s_b,
-    int vm_s_h, const T* __restrict__ v_in, uint8_t* __restrict__ v_out,
-    uint8_t* __restrict__ v_sf, int v_num_tokens, int v_s_bz, int v_s_h,
-    int v_s_seq, int v_s_out_bz, int v_s_out_h, int v_s_out_d, int v_s_sf_bz,
-    int v_s_sf_h, int v_s_sf_d, int d_og, int q_tiles, int k_tiles, int q_heads,
-    int kv_heads) {
+    int64_t q_s_bz, int64_t q_s_h, int64_t q_s_seq, int64_t q_s_out_bz,
+    int64_t q_s_out_h, int64_t q_s_out_seq, int64_t q_s_sf_bz, int64_t q_s_sf_h,
+    int64_t q_s_sf_seq, int64_t qm_s_bz, int64_t qm_s_h, int64_t qm_s_m,
+    const float* __restrict__ km, int64_t km_s_b, int64_t km_s_h,
+    const T* __restrict__ k_in, uint8_t* __restrict__ k_out,
+    uint8_t* __restrict__ k_sf, int k_num_tokens, int64_t k_s_bz, int64_t k_s_h,
+    int64_t k_s_seq, int64_t k_s_out_bz, int64_t k_s_out_h, int64_t k_s_out_seq,
+    int64_t k_s_sf_bz, int64_t k_s_sf_h, int64_t k_s_sf_seq,
+    const float* __restrict__ vm, int64_t vm_s_b, int64_t vm_s_h,
+    const T* __restrict__ v_in, uint8_t* __restrict__ v_out,
+    uint8_t* __restrict__ v_sf, int v_num_tokens, int64_t v_s_bz, int64_t v_s_h,
+    int64_t v_s_seq, int64_t v_s_out_bz, int64_t v_s_out_h, int64_t v_s_out_d,
+    int64_t v_s_sf_bz, int64_t v_s_sf_h, int64_t v_s_sf_d, int d_og,
+    int q_tiles, int k_tiles, int q_heads, int kv_heads) {
   using PackedVec = Fp4PackedVec<T>;
   constexpr int kThreadsPerToken = 4;
   constexpr int kVecsPerThread = kHeadDim / 64;
