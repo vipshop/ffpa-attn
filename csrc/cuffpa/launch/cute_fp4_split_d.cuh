@@ -291,9 +291,12 @@ void launch_cute_fwd_split_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
   auto tma_sfvt = make_tma_copy<uint16_t>(
       SM90_TMA_LOAD{}, mSFVt, SmemLayoutSFVt{}(_, _, _0{}),
       Shape<Int<kVDChunk>, Int<kBc>>{}, _1{});
-  auto layout_DS =
-      tile_to_shape(SmemLayoutAtomDS{}, make_shape(Nq_pad, Nkv_pad, Nh, Nb),
-                    Step<_2, _1, _3, _4>{});
+  // int64 extents: see the persist-D launcher for the int32 block-stride
+  // overflow (Nkv_pad * (Nq_pad/kBr) * Nh > INT32_MAX) this prevents.
+  auto layout_DS = tile_to_shape(
+      SmemLayoutAtomDS{},
+      make_shape(int64_t(Nq_pad), int64_t(Nkv_pad), int64_t(Nh), int64_t(Nb)),
+      Step<_2, _1, _3, _4>{});
   auto mDS = make_tensor(make_gmem_ptr(delta_s.data_ptr<float>()), layout_DS);
   auto tma_ds = make_tma_copy(SM90_TMA_LOAD{}, mDS, SmemLayoutDS{}(_, _, _0{}),
                               Shape<Int<kBr>, Int<kBc>>{}, _1{});

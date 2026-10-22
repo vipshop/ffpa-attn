@@ -366,9 +366,16 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
   auto tma_sfvt = make_tma_copy<uint16_t>(
       SM90_TMA_LOAD{}, mSFVt, SmemLayoutSFVt{}(_, _, _0{}),
       Shape<Int<kHeadDim>, Int<kBc>>{}, _1{});
-  auto layout_DS =
-      tile_to_shape(SmemLayoutAtomDS{}, make_shape(Nq_pad, Nkv_pad, Nh, Nb),
-                    Step<_2, _1, _3, _4>{});
+  // int64 extents: tile_to_shape/make_ordered_layout accumulate the block
+  // strides as products of these extents in their own integer type. With
+  // int32 the batch-mode stride Nkv_pad * (Nq_pad/kBr) * Nh overflows
+  // INT32_MAX for long sequences (e.g. ~70k tokens at Nh=56, a 10s 768x1344
+  // MiniMax-H3 clip), wraps negative and trips the CUTLASS TMA assertion
+  // (gmem_prob_stride[4] < 2^40) inside make_tma_copy_desc.
+  auto layout_DS = tile_to_shape(
+      SmemLayoutAtomDS{},
+      make_shape(int64_t(Nq_pad), int64_t(Nkv_pad), int64_t(Nh), int64_t(Nb)),
+      Step<_2, _1, _3, _4>{});
   auto mDS = make_tensor(make_gmem_ptr(delta_s.data_ptr<float>()), layout_DS);
   auto tma_ds = make_tma_copy(SM90_TMA_LOAD{}, mDS, SmemLayoutDS{}(_, _, _0{}),
                               Shape<Int<kBr>, Int<kBc>>{}, _1{});
