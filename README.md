@@ -15,7 +15,7 @@
 
 |[Self Attn](./bench)| [GQA/MQA](./bench) |[Cross Attn](./bench)|[Causal/Mask](./bench)|[Dropout](./bench)|[Headdim](#ffpa-design)|[Fwd/Bwd](./bench)|
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-|✔️(`Nq=Nkv`)|✔️(`Hq!=Hkv`)|✔️(`Nq!=Nkv`)|✔️(`attn_mask`)|✔️(`p>0`)|**320~1024** |**1.5x~15x↑** |
+|✔️(`Nq=Nkv`)|✔️(`Hq!=Hkv`)|✔️(`Nq!=Nkv`)|✔️(`attn_mask`)|✔️(`p>0`)|**64~1024** |**1.5x~15x↑** |
 
 </div>
 
@@ -82,7 +82,6 @@ v = torch.randn(B, H, N, D, dtype=torch.bfloat16, device="cuda")
 # FFPA self attention; layout follows SDPA: (B, H, N, D).
 out = ffpa_attn_func(q, k, v)  # -> torch.Tensor of shape (B, H, N, D)
 ref = F.scaled_dot_product_attention(q, k, v)
-
 print(f"FFPA vs SDPA max_abs_err={(out - ref).abs().max().item():.4e}")
 ```
 
@@ -112,7 +111,6 @@ ffpa_attn_func_fp4 = partial(ffpa_attn_func, forward_backend=fp4_backend)
 out_fp8 = ffpa_attn_func_fp8(q, k, v)  # -> torch.Tensor of shape (B, H, N, D)
 out_fp4 = ffpa_attn_func_fp4(q, k, v)  # -> torch.Tensor of shape (B, H, N, D)
 ref = F.scaled_dot_product_attention(q, k, v)
-
 print(f"FFPA FP8 vs SDPA max_abs_err={(out_fp8 - ref).abs().max().item():.4e}")
 print(f"FFPA FP4 vs SDPA max_abs_err={(out_fp4 - ref).abs().max().item():.4e}")
 ```
