@@ -78,7 +78,7 @@
 | profile | 编译 flags | 版本 | 产物 | 用途 |
 |---|---|---|---|---|
 | `mini` | `--arch 89,120f --ext all --headdim 128` | scm 推导 `0.2.x.devN` | 默认单 env，约 21 MiB | 流水线验证；禁止发布 |
-| `full` | `--arch 89,120f --ext all --headdim default` | 必给 V，自动补 `+<通道>` | 5 个 cp310–cp314 wheel，各约 80 MiB | 发布 CUDA 通道 |
+| `full` | `--arch 89,120f --ext all --headdim default` | 必给 V，自动补 `+<通道>` | 4 个 cp311–cp314 wheel，各约 80 MiB | 发布 CUDA 通道 |
 | `pure` | `--ext none` | 必给 V，且不带 local 段 | 1 个 `py3-none-any`，约 0.5 MiB | 发布到 PyPI |
 
 ## 6. 发布 CUDA wheel 的内容矩阵
