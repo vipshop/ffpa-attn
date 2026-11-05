@@ -21,7 +21,7 @@ pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ 
 
 - **必须带 `--extra-index-url https://pypi.org/simple`**：我们的索引只放 `ffpa-attn` 一个项目、不带依赖，缺第二个索引时 pip 会在第一个未安装的依赖上失败。
 - **先装 torch**（`pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu130`）。wheel 只针对 CUDA 13.x 编译（验证基线 `torch==2.11.0+cu130`）；若让 pip 去 PyPI 拉 torch，会拿到非 cu130 构建，装完在 `import` 时报 `libcudart.so.13` 找不到。
-- 运行前提：Linux x86_64、glibc ≥ 2.38、Python 3.10–3.14（以索引页列为准）、torch cu130、GPU 属于已编译架构（sm_89 或 sm_120f）。
+- 运行前提：Linux x86_64、glibc ≥ 2.38、Python 3.11–3.14（以索引页列为准；cp310 已随 py310 EOL 停止产出）、torch cu130、GPU 属于已编译架构（sm_89 或 sm_120f）。
 - pip 行为（实测）：local 版本排序高于同 base 版本，所以两个索引同时可用时我们的包胜出，且已装的纯包不再满足需求；装过 CUDA 包后 `pip install -U ffpa-attn`（不带我们的索引）**不会**降级回纯包；要退回纯包是「卸载再装」：
 
 ```bash
@@ -77,11 +77,11 @@ CUDA_VISIBLE_DEVICES=7 python -m ffpa_attn.bench --backend cuda --no-bwd --cuda-
 
 ## 5. 已发布事实（2026-10-14 核对，会随时间变化）
 
-- Release `v0.2.4+cu13`：5 个资产（cp310–cp314，`manylinux_2_38_x86_64`）；Release `v0.2.4`：带 `ffpa_attn-0.2.4-py3-none-any.whl` 资产与 Summary 型 notes。
+- Release `v0.2.4+cu13`：5 个资产（cp310–cp314，`manylinux_2_38_x86_64`；**该版含 cp310，是 py310 EOL 前的历史产物**）；Release `v0.2.4`：带 `ffpa_attn-0.2.4-py3-none-any.whl` 资产与 Summary 型 notes。此后新版本只产出 cp311–cp314 共 4 个 wheel。
 - PyPI `ffpa-attn` 最新版 `0.2.4`，只有 `ffpa_attn-0.2.4-py3-none-any.whl`（纯包）。
 - 仓库 **Latest 指针**：`gh api repos/vipshop/ffpa-attn/releases/latest` 返回 `v0.2.4+cu13`，尽管脚本以 `--latest=false` 创建它。若希望普通 release（`v<版本>`）占据 Latest，发布后需在 GitHub Releases 页面手动 `Set as the latest release`。
 - 两个 tag 并非同一修订：`v0.2.4+cu13` → `61f2ff3`、`v0.2.4` → `c545235`（CUDA 通道是补发形态）。后续发布建议两者同源。
-- 本机索引工作树在 `.tmp/gh-pages`（`.tmp` 已被 `.gitignore` 忽略）；`.tmp/release_build/py310..py314` 是 full 档的增量 workspace。
+- 本机索引工作树在 `.tmp/gh-pages`（`.tmp` 已被 `.gitignore` 忽略）；`.tmp/release_build/py311..py314` 是 full 档的增量 workspace（旧环境里可能还留着 `py310/`，可直接删）。
 
 ## 6. 为何 CUDA 包不上 PyPI（决策记录）
 

@@ -1,6 +1,6 @@
 ---
 name: ffpa-build-release
-description: "ffpa-attn 发布全流程（给定一个版本号即可执行完）：pure profile 构建 PyPI 纯 Python wheel、full profile 构建带 CUDA 扩展的 whl（cp310–cp314，sm_89 + sm_120f）、RPATH 与 manylinux 平台标签归一、GitHub Release 资产上传、gh-pages 上的 PEP 503 静态索引发布与镜像、PyPI 上传，以及发布后验收与安装语义。Use when cutting an ffpa-attn release, building or publishing the CUDA-extension wheels under whl/cu13, regenerating the wheel index on gh-pages, uploading the pure-Python wheel to PyPI, or verifying an install from the index."
+description: "ffpa-attn 发布全流程（给定一个版本号即可执行完）：pure profile 构建 PyPI 纯 Python wheel、full profile 构建带 CUDA 扩展的 whl（cp311–cp314，sm_89 + sm_120f）、RPATH 与 manylinux 平台标签归一、GitHub Release 资产上传、gh-pages 上的 PEP 503 静态索引发布与镜像、PyPI 上传，以及发布后验收与安装语义。Use when cutting an ffpa-attn release, building or publishing the CUDA-extension wheels under whl/cu13, regenerating the wheel index on gh-pages, uploading the pure-Python wheel to PyPI, or verifying an install from the index."
 user-invocable: true
 ---
 
@@ -14,7 +14,7 @@ user-invocable: true
 
 | 产物 | 名称 | 去向 |
 |---|---|---|
-| CUDA wheel ×5 | `ffpa_attn-${V}+cu13-cp3{10..14}-cp3{10..14}-manylinux_2_38_x86_64.whl`（各 ~80 MB） | Release `v${V}+cu13` 资产 + gh-pages 索引 `whl/cu13/` |
+| CUDA wheel ×4 | `ffpa_attn-${V}+cu13-cp3{11..14}-cp3{11..14}-manylinux_2_38_x86_64.whl`（各 ~80 MB） | Release `v${V}+cu13` 资产 + gh-pages 索引 `whl/cu13/` |
 | 纯 Python wheel ×1 | `ffpa_attn-${V}-py3-none-any.whl`（~0.5 MB） | PyPI + Release `v${V}` 资产 |
 | 索引页 | `whl/cu13/ffpa-attn/index.html`（PEP 503，每个锚点带 sha256） | 项目 `gh-pages` 分支根 → `vipshop.github.io/ffpa-attn/` |
 
@@ -33,7 +33,7 @@ pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ 
 ```bash
 git status --porcelain -- src csrc setup.py env.py pyproject.toml setup.cfg MANIFEST.in README.md LICENSE
 "${CUDA_HOME:-/usr/local/cuda}/bin/nvcc" --version | tail -2     # 需 CUDA 13.x
-for e in py310 py311 py312 py313 py314; do \
+for e in py311 py312 py313 py314; do \
   conda run -n "$e" python -c \
   "import sys, packaging, setuptools_scm, torch, wheel; print(sys.version.split()[0], torch.__version__)"; done
 command -v ccache patchelf objdump gh twine
@@ -43,7 +43,7 @@ gh release view "v${V}+${CHANNEL}" --repo vipshop/ffpa-attn      # 期望 not fo
 
 - 第一条输出必须为空：full 档只从已提交源构建。确有需要可 `FFPA_RELEASE_ALLOW_UNCOMMITTED=1` 绕过（会告警，产物不对应任何 commit）。
 - PyPI 版本不可覆盖：确认 `ffpa-attn` 上没有 V（`curl -s https://pypi.org/pypi/ffpa-attn/json`）。
-- py310–py314 提供发布用的 CPython 集合，缺哪个就少一个 wheel；发布集合以实际 env 为准。
+- py311–py314 提供发布用的 CPython 集合，缺哪个就少一个 wheel；发布集合以实际 env 为准。**py310 已于 2026-10 结束官方维护，不再产出 cp310 wheel**（历史 release 里仍有 `v0.2.4+cu13` 等 cp310 资产，仅供旧环境安装）。
 
 ### 1. dry-run（可选，首次发布或改过发布脚本时）
 
@@ -55,7 +55,7 @@ FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=$V FFPA_RELEASE_DRY_RUN=1 bash to
 
 ```bash
 FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=$V FFPA_RELEASE_CHANNEL=cu13 \
-FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" \
+FFPA_RELEASE_ENVS="py311 py312 py313 py314" \
 bash tools/build_releases.sh
 ```
 
