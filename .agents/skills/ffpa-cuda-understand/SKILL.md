@@ -705,7 +705,7 @@ bash ./build.sh --arch sm_120f --headdim <list> --ext all --jobs 64
 
 ### 10.6 辅助 skill
 
-本报告的 kernel 级优化/调试工作可搭配以下 skill 使用（`.github/skills/`）：
+本报告的 kernel 级优化/调试工作可搭配以下 skill 使用（`.agents/skills/`）：
 
 - `cuda-auto-tune`：NCU 驱动的迭代优化工作流（先 profile 后改码，通用性能 skill）。
 - `cuda-cpp-kernel`：CUDA C++/PTX kernel 编写、调试、nsys/ncu profiling、架构行为。
