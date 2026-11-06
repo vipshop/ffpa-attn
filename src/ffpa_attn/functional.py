@@ -310,8 +310,8 @@ def _fp4_delta_s_query_chunk_rows(
   :param key: Key tensor (``[B, Nkv, Hkv, D]`` when ``nhd`` else
     ``[B, Hkv, Nkv, D]``).
   :param nhd: Whether the packed storage layout is NHD (diffusers BNHD).
-  :param budget_mb: ``CUDABackend.fp4_delta_s_budget_mb``; ``<= 0`` disables
-    chunking.
+  :param budget_mb: ``CUDABackend.fp4_delta_s_budget_mb``; consulted only
+    when ``CUDABackend.fp4_delta_s_chunk`` is on (``<= 0`` disables).
   :returns: Chunk length in query rows (multiple of 128, >= 512), or ``None``
     when chunking is disabled or the shapes are degenerate.
   """
@@ -420,11 +420,12 @@ def _ffpa_attn_forward(
     return O
 
   # NVFP4: split the query sequence so the quadratic fp32 delta_s workspace
-  # stays within CUDABackend.fp4_delta_s_budget_mb (bit-exact for dense
-  # attention; see _fp4_delta_s_query_chunk_rows). Causal is excluded because
-  # the fp4 hybrid stage-2 row-offset math assumes one launch over
+  # stays within CUDABackend.fp4_delta_s_budget_mb when
+  # CUDABackend.fp4_delta_s_chunk is on (bit-exact for dense attention; see
+  # _fp4_delta_s_query_chunk_rows). Causal is excluded because the fp4
+  # hybrid stage-2 row-offset math assumes one launch over
   # [q_start_row, Nq).
-  if forward_backend.enable_fp4 and not is_causal:
+  if forward_backend.enable_fp4 and not is_causal and forward_backend.fp4_delta_s_chunk:
     chunk_rows = _fp4_delta_s_query_chunk_rows(
       query, key, nhd, forward_backend.fp4_delta_s_budget_mb
     )
@@ -637,15 +638,20 @@ class CUDABackend(Backend):
   # sub_qm/sub_km quantize + delta_s/lse exact corrections are hardwired in
   # the fp4 kernels). fp4_smooth_v only adds the missing V side.
   fp4_smooth_v: bool = False
-  # FP4 only: cap (MiB) on the quadratic fp32 delta_s score-correction
-  # workspace ([B, Nh, ceil(Nq/128), Nkv_pad]; ~N^2 growth — e.g. ~25.6 GiB
-  # at Nq=Nkv=125k, Nh=56 — retained by the caching allocator after the
-  # call, which OOMs weight-resident serving configs). Above the cap the
-  # inference fast path replays the launch per 128-aligned query chunk:
-  # bit-exact for dense (non-causal) attention, K/V preprocessing re-runs
-  # per chunk (~+7% attention time at a 4 GiB cap on a 15s 768x1344 clip).
-  # 0 (default) disables chunking (original single-launch behavior).
-  fp4_delta_s_budget_mb: int = 0
+  # FP4 only: replay the inference fast path per 128-aligned query chunk so
+  # the quadratic fp32 delta_s score-correction workspace ([B, Nh,
+  # ceil(Nq/128), Nkv_pad]; ~N^2 growth — e.g. ~25.6 GiB at Nq=Nkv=125k,
+  # Nh=56 — retained by the caching allocator after the call, which OOMs
+  # weight-resident serving configs) stays bounded. Bit-exact for dense
+  # (non-causal) attention; K/V preprocessing re-runs per chunk (~+7%
+  # attention time at the default budget on a 15s 768x1344 clip).
+  # False (default) keeps the original single-launch behavior.
+  fp4_delta_s_chunk: bool = False
+  # FP4 only: delta_s workspace cap (MiB) consulted when
+  # ``fp4_delta_s_chunk`` is on. The default of 4096 keeps the extra
+  # attention latency near +7% on a 15s 768x1344 clip while bounding the
+  # workspace to ~4 GiB; must be > 0 when chunking is enabled.
+  fp4_delta_s_budget_mb: int = 4096
   # Storage layout of Q/K/V inputs and the returned O: "HND" (default) for
   # BHND packed [B, H, N, D] tensors, or "NHD" for diffusers-style
   # [B, N, H, D] packed storage (output follows the input layout). NHD is
@@ -692,9 +698,9 @@ class CUDABackend(Backend):
     assert not self.fp4_hadamard or self.enable_fp4, (
       "fp4_hadamard requires enable_fp4"
     )
-    assert self.fp4_delta_s_budget_mb >= 0, (
-      f"fp4_delta_s_budget_mb must be >= 0 (0 disables chunking), got "
-      f"{self.fp4_delta_s_budget_mb}"
+    assert self.fp4_delta_s_budget_mb > 0 or not self.fp4_delta_s_chunk, (
+      f"fp4_delta_s_budget_mb must be > 0 when fp4_delta_s_chunk is on, "
+      f"got {self.fp4_delta_s_budget_mb}"
     )
     assert not self.fp8_hadamard or self.enable_fp8, (
       "fp8_hadamard requires enable_fp8"
