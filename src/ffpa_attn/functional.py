@@ -598,8 +598,8 @@ class CUDABackend(Backend):
   enable_fp4: bool = False  # NVFP4 persist-D sm120 path (any D%8==0 within [8,256], pads up to {64,128,192,256}).
   fp8_smooth_k: bool = True  # FP8 only: subtract per-(b,h) K seq mean pre-quant.
   fp8_smooth_v: bool = False  # FP8 only: subtract per-(b,h) V dim mean.
-  fp8_q_quant_method: str = "per_block"  # FP8 only; per_block / per_thread.
-  fp8_k_quant_method: str = "per_block"  # FP8 only; per_block / per_thread.
+  fp8_q_quant_method: str = "per_block"  # FP8 only: per_block / per_thread.
+  fp8_k_quant_method: str = "per_block"  # FP8 only: per_block / per_thread.
   # Default per_channel: V has channel-wise outliers; a per_block scale is
   # shared by an entire 128-row tile and a single outlier drives the amax,
   # crushing every other row (SageAttention, arXiv:2406.12943 Sec 4.3).
@@ -607,7 +607,7 @@ class CUDABackend(Backend):
   fp8_pv_acc_type: str = "f32"  # FP8 only; f32/f16 PV accumulator.
   fp8_qk_mm_type: str = "fp8"  # FP8 only: QK MMA dtype; "fp8" or "int8".
   # Hybrid — fp16 computes [0:n_early] rows, the quantized path computes
-  # [n_early:N) via q_start_row offset (zero-redundancy). Works for causal
+  # [n_early:N] via q_start_row offset (zero-redundancy). Works for causal
   # (fixes early-row accuracy loss) and non-causal (user-selected rows get
   # full fp16 precision). None=auto: enabled when the matching quant path
   # (enable_fp8 / enable_fp4) + is_causal. fp8_hybrid and fp4_hybrid are
@@ -909,7 +909,7 @@ class CuTeDSLBackend(Backend):
       option of the same name). SM90 path currently ignores this knob and
       will raise if it is set.
   """
-  name: str = "cutedsl"
+  name: str "cutedsl"
   grad_kv_storage_dtype: torch.dtype | str | None = None
 
   def __post_init__(self) -> None:
@@ -1172,8 +1172,8 @@ class FFPAAttnMeta:
     # sdpa forward always short-circuits to the native aten path regardless
     # of backward_meta. _FFPAAttnFunc has no general dispatch for sdpa-based
     # forward, and aten flash-attention only handles D<=256.  Letting sdpa
-    # forward pass through fallback keeps the public API layer responsible
-    # for the full sdpa forward+backward path instead of routing through the
+    # forward pass through fallback keeps the public API layer responsible for
+    # the full sdpa forward+backward path instead of routing through the
     # incomplete Function dispatch below.
     if self.forward_meta.name == "sdpa":
       return True
@@ -1352,7 +1352,7 @@ class FFPAAttnMeta:
     additive bias.
 
     :param query: Query tensor with shape ``[B, Nh_q, Nq, D]``.
-    :param key: Query tensor with shape ``[B, Nh_kv, Nkv, D]``.
+    :param key: Key tensor with shape ``[B, Nh_kv, Nkv, D]``.
     :param attn_mask: Optional user-provided SDPA attention mask.
     :returns: Additive attention bias or ``None``.
     :raises TypeError: If the mask dtype or device is unsupported.
