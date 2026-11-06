@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from .logger import init_logger
 from .triton import (
   _ffpa_attn_forward_triton,
   _ffpa_attn_backward_triton,
@@ -55,6 +56,8 @@ try:
 except Exception:
   set_cuda_backend_impl = None
   CudaBackendImpl = None
+
+logger = init_logger(__name__)
 
 if TYPE_CHECKING:
   from typing import Tuple, Union, Optional  # noqa: F401
@@ -276,6 +279,59 @@ def _cuda_input_guard_and_mask_downcast(
   return attn_bias
 
 
+# Query-chunk floor for the fp4 delta_s split: the CUDA fast path treats
+# Nq < 512 as a small-shape fallback, so never carve a chunk below this.
+_FP4_MIN_CHUNK_ROWS = 512
+# One-shot log guard for the fp4 query-chunked path (per process).
+_FP4_CHUNK_LOGGED = False
+
+
+def _fp4_delta_s_query_chunk_rows(
+  query: torch.Tensor, key: torch.Tensor, nhd: bool, budget_mb: int
+) -> int | None:
+  """Query-chunk length capping the fp4 ``delta_s`` workspace at the budget.
+
+  Every NVFP4 launcher (persist-D / split-D / split-D m4n2) materializes the
+  exact score correction ``delta_s = qm @ (K - km)^T`` as an fp32
+  ``[B, Nh, ceil(Nq/128), ceil(Nkv/128)*128]`` workspace
+  (csrc/cuffpa/launch/cute_fp4_*.cuh). That buffer grows quadratically with
+  the sequence length — ~27 GiB at Nq = Nkv = 125k, Nh = 56 — and the CUDA
+  caching allocator retains it after the call, so long-sequence fp4 attention
+  OOMs weight-resident configs that the fp8 path survives.
+
+  Dense (non-causal) attention output rows are independent, and the per-128-
+  row ``qm`` blocks never straddle a 128-aligned query boundary, so replaying
+  the launch per query chunk reproduces the unchunked call bit-exactly while
+  bounding ``delta_s`` to the chunk. K/V preprocessing is linear in Nkv and
+  is simply re-run per chunk (a few extra GB of HBM traffic, no extra peak).
+
+  :param query: Query tensor (``[B, Nq, H, D]`` when ``nhd`` else
+    ``[B, H, Nq, D]``).
+  :param key: Key tensor (``[B, Nkv, Hkv, D]`` when ``nhd`` else
+    ``[B, Hkv, Nkv, D]``).
+  :param nhd: Whether the packed storage layout is NHD (diffusers BNHD).
+  :param budget_mb: ``CUDABackend.fp4_delta_s_budget_mb``; consulted only
+    when ``CUDABackend.fp4_delta_s_chunk`` is on (``<= 0`` disables).
+  :returns: Chunk length in query rows (multiple of 128, >= 512), or ``None``
+    when chunking is disabled or the shapes are degenerate.
+  """
+  if budget_mb <= 0:
+    return None
+  if nhd:
+    nb, nh, nkv = query.size(0), query.size(2), key.size(1)
+  else:
+    nb, nh, nkv = query.size(0), query.size(1), key.size(2)
+  nkv_pad = (nkv + 127) // 128 * 128
+  # fp32 bytes of one 128-row q-block column stripe of delta_s.
+  bytes_per_q_block = nb * nh * nkv_pad * 4
+  if bytes_per_q_block <= 0:
+    return None
+  blocks = max(
+    _FP4_MIN_CHUNK_ROWS // 128, (budget_mb << 20) // bytes_per_q_block
+  )
+  return int(blocks) * 128
+
+
 def _ffpa_attn_forward(
   query: torch.Tensor,
   key: torch.Tensor,
@@ -328,37 +384,75 @@ def _ffpa_attn_forward(
     forward_backend.fp4_hybrid = bool(forward_backend.enable_fp4 and is_causal)
   _apply_cuda_backend_hint(forward_backend, query.device)
   _cuda_input_guard_and_mask_downcast(query, None)  # fp16 guard only here
-  O, _ = _ffpa_attn_forward_cuda(
-    query,
-    key,
-    value,
-    None,
-    None,
-    forward_backend.stages,
-    forward_backend.acc_code,
-    int(is_causal),
-    1.0 / math.sqrt(query.size(-1)) if scale is None else float(scale),
-    0.0,
-    0,
-    0,
-    forward_backend.fp8_smooth_k,
-    forward_backend.fp8_smooth_v,
-    forward_backend.fp8_q_quant_method_code,
-    forward_backend.fp8_k_quant_method_code,
-    forward_backend.fp8_v_quant_method_code,
-    forward_backend.fp8_pv_acc_code,
-    forward_backend.fp8_qk_mm_type_code,
-    forward_backend.fp8_hybrid,
-    forward_backend.fp8_hybrid_n_early,
-    forward_backend.fp4_hybrid,
-    forward_backend.fp4_hybrid_n_early,
-    forward_backend.fp8_hadamard,
-    forward_backend.fp4_hadamard,
-    forward_backend.fp4_pv_mm_type_code,
-    forward_backend.fp4_smooth_v,
-    forward_backend.tensor_layout_code,
-  )
-  return O
+  scale_v = 1.0 / math.sqrt(query.size(-1)) if scale is None else float(scale)
+
+  def _run(q: torch.Tensor) -> torch.Tensor:
+    O, _ = _ffpa_attn_forward_cuda(
+      q,
+      key,
+      value,
+      None,
+      None,
+      forward_backend.stages,
+      forward_backend.acc_code,
+      int(is_causal),
+      scale_v,
+      0.0,
+      0,
+      0,
+      forward_backend.fp8_smooth_k,
+      forward_backend.fp8_smooth_v,
+      forward_backend.fp8_q_quant_method_code,
+      forward_backend.fp8_k_quant_method_code,
+      forward_backend.fp8_v_quant_method_code,
+      forward_backend.fp8_pv_acc_code,
+      forward_backend.fp8_qk_mm_type_code,
+      forward_backend.fp8_hybrid,
+      forward_backend.fp8_hybrid_n_early,
+      forward_backend.fp4_hybrid,
+      forward_backend.fp4_hybrid_n_early,
+      forward_backend.fp8_hadamard,
+      forward_backend.fp4_hadamard,
+      forward_backend.fp4_pv_mm_type_code,
+      forward_backend.fp4_smooth_v,
+      forward_backend.tensor_layout_code,
+    )
+    return O
+
+  # NVFP4: split the query sequence so the quadratic fp32 delta_s workspace
+  # stays within CUDABackend.fp4_delta_s_budget_mb when
+  # CUDABackend.fp4_delta_s_chunk is on (bit-exact for dense attention; see
+  # _fp4_delta_s_query_chunk_rows). Causal is excluded because the fp4
+  # hybrid stage-2 row-offset math assumes one launch over
+  # [q_start_row, Nq).
+  if forward_backend.enable_fp4 and not is_causal and forward_backend.fp4_delta_s_chunk:
+    chunk_rows = _fp4_delta_s_query_chunk_rows(
+      query, key, nhd, forward_backend.fp4_delta_s_budget_mb
+    )
+    if chunk_rows is not None and chunk_rows < nq:
+      global _FP4_CHUNK_LOGGED
+      if not _FP4_CHUNK_LOGGED:
+        _FP4_CHUNK_LOGGED = True
+        logger.info(
+          "ffpa_attn: fp4 delta_s workspace split: Nq=%d Nkv=%d -> %d-row "
+          "query chunks (fp4_delta_s_budget_mb=%d)",
+          nq,
+          nkv,
+          chunk_rows,
+          forward_backend.fp4_delta_s_budget_mb,
+        )
+      seq_dim = 1 if nhd else 2
+      starts = list(range(0, nq, chunk_rows))
+      if len(starts) > 1 and nq - starts[-1] < _FP4_MIN_CHUNK_ROWS:
+        starts.pop()  # fold a short tail into the previous chunk
+      out = torch.empty_like(query)
+      for i, r0 in enumerate(starts):
+        r1 = starts[i + 1] if i + 1 < len(starts) else nq
+        out.narrow(seq_dim, r0,
+                   r1 - r0).copy_(_run(query.narrow(seq_dim, r0, r1 - r0)))
+      return out
+
+  return _run(query)
 
 
 def _normalize_grad_kv_storage_dtype(
@@ -546,6 +640,20 @@ class CUDABackend(Backend):
   # sub_qm/sub_km quantize + delta_s/lse exact corrections are hardwired in
   # the fp4 kernels). fp4_smooth_v only adds the missing V side.
   fp4_smooth_v: bool = False
+  # FP4 only: replay the inference fast path per 128-aligned query chunk so
+  # the quadratic fp32 delta_s score-correction workspace ([B, Nh,
+  # ceil(Nq/128), Nkv_pad]; ~N^2 growth — e.g. ~25.6 GiB at Nq=Nkv=125k,
+  # Nh=56 — retained by the caching allocator after the call, which OOMs
+  # weight-resident serving configs) stays bounded. Bit-exact for dense
+  # (non-causal) attention; K/V preprocessing re-runs per chunk (~+7%
+  # attention time at the default budget on a 15s 768x1344 clip).
+  # False (default) keeps the original single-launch behavior.
+  fp4_delta_s_chunk: bool = False
+  # FP4 only: delta_s workspace cap (MiB) consulted when
+  # ``fp4_delta_s_chunk`` is on. The default of 4096 keeps the extra
+  # attention latency near +7% on a 15s 768x1344 clip while bounding the
+  # workspace to ~4 GiB; must be > 0 when chunking is enabled.
+  fp4_delta_s_budget_mb: int = 4096
   # Storage layout of Q/K/V inputs and the returned O: "HND" (default) for
   # BHND packed [B, H, N, D] tensors, or "NHD" for diffusers-style
   # [B, N, H, D] packed storage (output follows the input layout). NHD is
@@ -591,6 +699,10 @@ class CUDABackend(Backend):
     )
     assert not self.fp4_hadamard or self.enable_fp4, (
       "fp4_hadamard requires enable_fp4"
+    )
+    assert self.fp4_delta_s_budget_mb > 0 or not self.fp4_delta_s_chunk, (
+      f"fp4_delta_s_budget_mb must be > 0 when fp4_delta_s_chunk is on, "
+      f"got {self.fp4_delta_s_budget_mb}"
     )
     assert not self.fp8_hadamard or self.enable_fp8, (
       "fp8_hadamard requires enable_fp8"
@@ -1242,8 +1354,8 @@ class FFPAAttnMeta:
 
     The returned tensor is a 4-D additive bias that remains compact when the
     user mask broadcasts over batch or head dimensions. Triton wrappers pass
-    zero strides for broadcast dimensions instead of materializing an expanded
-    ``[B, Nh_q, Nq, Nkv]`` view. Boolean masks follow SDPA semantics: ``True``
+    zero strides for broadcast dimensions instead of materializing an
+    expanded ``[B, Nh_q, Nq, Nkv]`` view. Boolean masks follow SDPA semantics: ``True``
     means the element participates in attention and ``False`` maps to ``-inf``
     additive bias.
 
