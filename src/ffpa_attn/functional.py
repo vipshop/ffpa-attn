@@ -308,7 +308,7 @@ def _fp4_delta_s_query_chunk_rows(
   :param query: Query tensor (``[B, Nq, H, D]`` when ``nhd`` else
     ``[B, H, Nq, D]``).
   :param key: Key tensor (``[B, Nkv, Hkv, D]`` when ``nhd`` else
-    "[B, Hkv, Nkv, D]``).
+    ``[B, Hkv, Nkv, D]``).
   :param nhd: Whether the packed storage layout is NHD (diffusers BNHD).
   :param budget_mb: ``CUDABackend.fp4_delta_s_budget_mb``; ``<= 0`` disables
     chunking.
@@ -540,11 +540,11 @@ class CUDABackend(Backend):
   :ivar fp8_smooth_v: FP8 only: subtract the per-(b,h) V dim mean.
       Requires ``fp8_v_quant_method='per_channel'``.
   :ivar fp8_q_quant_method: FP8 Q quant granularity, ``"per_block"`` or
-      "per_thread"``.
+      ``"per_thread"``.
   :ivar fp8_k_quant_method: FP8 K quant granularity, ``"per_block"`` or
       ``"per_thread"`` (must match ``fp8_q_quant_method``).
   :ivar fp8_v_quant_method: FP8 V quant granularity, ``"per_block"`` or
-      "per_channel"``. Defaults to ``"per_channel"``: SageAttention
+      ``"per_channel"``. Defaults to ``"per_channel"``: SageAttention
       (arXiv:2406.12943) shows V exhibits channel-wise outliers that a
       per-block scale cannot contain (one block-wide amax lets a single
       outlier crush the whole block), so it quantizes V per-channel
@@ -552,8 +552,8 @@ class CUDABackend(Backend):
       V"); SageAttention2 (arXiv:2410.21265) keeps V per-channel and adds
       optional smooth-V. Per-block V is kept for exact regressions but is
       not recommended for outlier-heavy activations.
-  :ivar fp8_pv_acc_type: FP8 PV accumulator dtype, ``"f32"`` or "f16"``.
-  :ivar fp8_qk_mm_type: FP8 QK MMA dtype, ``"fp8"`` (e4m3) or "int8"``.
+  :ivar fp8_pv_acc_type: FP8 PV accumulator dtype, ``"f32"`` or ``"f16"``.
+  :ivar fp8_qk_mm_type: FP8 QK MMA dtype, ``"fp8"`` (e4m3) or ``"int8"``.
   :ivar fp8_hybrid: 2-stage hybrid for the fp8 path — fp16 computes the
       [0:n_early] rows and fp8 the [n_early:N) rows via a q_start_row offset.
       ``None`` (default) is auto: enabled when causal + ``enable_fp8``.
@@ -575,8 +575,8 @@ class CUDABackend(Backend):
       per-(b,hkv) V column mean before V quantize; the kernel epilogue adds
       it back (softmax rows sum to 1).
   :ivar tensor_layout: Storage layout of Q/K/V inputs and the returned O:
-      "HND"`` (default) for BHND packed ``[B, H, N, D]`` tensors, or
-      "NHD"`` for diffusers-style ``[B, N, H, D]`` packed storage (output
+      ``"HND"`` (default) for BHND packed ``[B, H, N, D]`` tensors, or
+      ``"NHD"`` for diffusers-style ``[B, N, H, D]`` packed storage (output
       follows the input layout). NHD is implemented by the persist-D sm120
       CUDA kernels (fp8 / fp16 / fp4) on the inference fast path only.
   :ivar is_causal: Runtime flag propagated from
@@ -721,7 +721,7 @@ class CUDABackend(Backend):
 
     Both ``None`` -> auto. On sm120+ the priority is ``CUTE_TMA`` (TMA+CUTE
     exts) -> ``TMA`` (TMA ext only) -> ``NATIVE``. A single ``None`` resolves
-    to ``False`` so an explicit ``--fwd-tma``/`--cute`` still selects
+    to ``False`` so an explicit ``--fwd-tma``/``--cute`` still selects
     ``TMA``/``CUTE``.
     """
     if self.enable_tma is None and self.enable_cute is None:
@@ -856,7 +856,7 @@ class TritonBackend(Backend):
   """Triton forward + backward backend (default).
 
   :ivar autotune: Enable Triton autotuning for kernel parameters.
-  :ivar autotune_mode: Autotune search granularity (``"fast"" or "max"``).
+  :ivar autotune_mode: Autotune search granularity (``"fast"`` or ``"max"``).
   :ivar enable_tma: Enable experimental SM90+ TMA hardware acceleration.
   :ivar enable_ws: Force warp-specialized configs (requires *enable_tma*).
   :ivar persist_dkdv: Keep ``dK``/``dV`` accumulator in fp32 across
@@ -1413,7 +1413,7 @@ class FFPAAttnMeta:
     """Validate public inputs and return metadata plus autograd inputs.
 
     :param query: Query tensor passed to the public API.
-    :param key: Query tensor passed to the public API.
+    :param key: Key tensor passed to the public API.
     :param value: Value tensor passed to the public API.
     :param attn_mask: Optional SDPA-style attention mask.
     :param dropout_p: Dropout probability.
