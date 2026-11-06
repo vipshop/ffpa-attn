@@ -436,7 +436,10 @@ def _ffpa_attn_forward(
         logger.info(
           "ffpa_attn: fp4 delta_s workspace split: Nq=%d Nkv=%d -> %d-row "
           "query chunks (fp4_delta_s_budget_mb=%d)",
-          nq, nkv, chunk_rows, forward_backend.fp4_delta_s_budget_mb,
+          nq,
+          nkv,
+          chunk_rows,
+          forward_backend.fp4_delta_s_budget_mb,
         )
       seq_dim = 1 if nhd else 2
       starts = list(range(0, nq, chunk_rows))
@@ -445,9 +448,8 @@ def _ffpa_attn_forward(
       out = torch.empty_like(query)
       for i, r0 in enumerate(starts):
         r1 = starts[i + 1] if i + 1 < len(starts) else nq
-        out.narrow(seq_dim, r0, r1 - r0).copy_(
-          _run(query.narrow(seq_dim, r0, r1 - r0))
-        )
+        out.narrow(seq_dim, r0,
+                   r1 - r0).copy_(_run(query.narrow(seq_dim, r0, r1 - r0)))
       return out
 
   return _run(query)
@@ -1352,8 +1354,8 @@ class FFPAAttnMeta:
 
     The returned tensor is a 4-D additive bias that remains compact when the
     user mask broadcasts over batch or head dimensions. Triton wrappers pass
-    zero strides for broadcast dimensions instead of materializing an expanded
-    ``[B, Nh_q, Nq, Nkv]`` view. Boolean masks follow SDPA semantics: ``True``
+    zero strides for broadcast dimensions instead of materializing an
+    expanded ``[B, Nh_q, Nq, Nkv]`` view. Boolean masks follow SDPA semantics: ``True``
     means the element participates in attention and ``False`` maps to ``-inf``
     additive bias.
 
