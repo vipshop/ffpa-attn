@@ -543,11 +543,11 @@ class CUDABackend(Backend):
   :ivar fp8_smooth_v: FP8 only: subtract the per-(b,h) V dim mean.
       Requires ``fp8_v_quant_method='per_channel'``.
   :ivar fp8_q_quant_method: FP8 Q quant granularity, ``"per_block"`` or
-      "per_thread".
-  :ivar fp8_k_quant_method: FP8 K quant granularity, "per_block" or
-      "per_thread" (must match ``fp8_q_quant_method``).
-  :ivar fp8_v_quant_method: FP8 V quant granularity, "per_block" or
-      "per_channel". Defaults to "per_channel": SageAttention
+      ``"per_thread"``.
+  :ivar fp8_k_quant_method: FP8 K quant granularity, ``"per_block"`` or
+      ``"per_thread"`` (must match ``fp8_q_quant_method``).
+  :ivar fp8_v_quant_method: FP8 V quant granularity, ``"per_block"`` or
+      ``"per_channel"``. Defaults to ``"per_channel"``: SageAttention
       (arXiv:2406.12943) shows V exhibits channel-wise outliers that a
       per-block scale cannot contain (one block-wide amax lets a single
       outlier crush the whole block), so it quantizes V per-channel
@@ -555,8 +555,8 @@ class CUDABackend(Backend):
       V"); SageAttention2 (arXiv:2410.21265) keeps V per-channel and adds
       optional smooth-V. Per-block V is kept for exact regressions but is
       not recommended for outlier-heavy activations.
-  :ivar fp8_pv_acc_type: FP8 PV accumulator dtype, "f32" or "f16".
-  :ivar fp8_qk_mm_type: FP8 QK MMA dtype, "fp8" (e4m3) or "int8".
+  :ivar fp8_pv_acc_type: FP8 PV accumulator dtype, ``"f32"`` or ``"f16"``.
+  :ivar fp8_qk_mm_type: FP8 QK MMA dtype, ``"fp8"`` (e4m3) or ``"int8"``.
   :ivar fp8_hybrid: 2-stage hybrid for the fp8 path — fp16 computes the
       [0:n_early] rows and fp8 the [n_early:N) rows via a q_start_row offset.
       ``None`` (default) is auto: enabled when causal + ``enable_fp8``.
@@ -571,15 +571,15 @@ class CUDABackend(Backend):
       FlashAttention-3, arXiv:2407.08608 Sec 3.3; exact in fp32 math).
   :ivar fp4_hadamard: FP4 only: same Walsh-Hadamard Q/K pre-rotation for
       the NVFP4 path (pow2 D rotates inside the quantize kernel).
-  :ivar fp4_pv_mm_type: FP4 PV MMA dtype, "fp4" (NVFP4 e2m1+ue4m3/16)
-      or "fp8" (MXFP8 e4m3+ue8m0/32, QK stays NVFP4; smem budget
+  :ivar fp4_pv_mm_type: FP4 PV MMA dtype, ``"fp4"`` (NVFP4 e2m1+ue4m3/16)
+      or ``"fp8"`` (MXFP8 e4m3+ue8m0/32, QK stays NVFP4; smem budget
       limits fp8 to D<=192).
   :ivar fp4_smooth_v: FP4 only (persist_d, D<=256): subtract the
       per-(b,hkv) V column mean before V quantize; the kernel epilogue adds
       it back (softmax rows sum to 1).
   :ivar tensor_layout: Storage layout of Q/K/V inputs and the returned O:
-      "HND" (default) for BHND packed [B, H, N, D] tensors, or
-      "NHD" for diffusers-style [B, N, H, D] packed storage (output
+      ``"HND"`` (default) for BHND packed ``[B, H, N, D]`` tensors, or
+      ``"NHD"`` for diffusers-style ``[B, N, H, D]`` packed storage (output
       follows the input layout). NHD is implemented by the persist-D sm120
       CUDA kernels (fp8 / fp16 / fp4) on the inference fast path only.
   :ivar is_causal: Runtime flag propagated from
