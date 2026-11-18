@@ -11,7 +11,7 @@ by the index you point pip at:
 The default install, `pip install -U ffpa-attn` with no index and no flags, is
 the pure-Python build -- the portable one, with no architecture, Python-version,
 torch or CUDA-toolkit constraint. The CUDA build is the same distribution name
-carrying a local version (`0.2.4+cu13`), which is what lets pip tell the two
+carrying a local version (`0.2.5+cu13`), which is what lets pip tell the two
 apart: it is what that index serves, and once installed it also outranks the
 plain release, so a later `pip install -U ffpa-attn` against PyPI will not
 quietly move you back to the pure-Python one.
@@ -78,7 +78,7 @@ pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ 
 > [!NOTE]
 > The CUDA index carries `ffpa-attn` alone -- no dependencies, and nothing else
 > -- so it cannot shadow anything, and `pip install ffpa-attn` with it means the
-> CUDA build (`0.2.4+cu13`) while the same command with no index means the
+> CUDA build (`0.2.5+cu13`) while the same command with no index means the
 > pure-Python build from PyPI. Where both indexes offer `ffpa-attn`, ours wins:
 > a local version sorts above the plain release, which is also why an already
 > installed pure-Python wheel no longer satisfies the requirement as-is.
@@ -102,7 +102,7 @@ pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ 
 > [!WARNING]
 > Going back to the pure-Python build is a reinstall, not a second install --
 > both builds are the `ffpa-attn` name and the `ffpa_attn/` package. An upgrade
-> request alone will not move you back, because `0.2.4+cu13` outranks `0.2.4`:
+> request alone will not move you back, because `0.2.5+cu13` outranks `0.2.5`:
 >
 > ```bash
 > pip uninstall -y ffpa-attn && pip install -U ffpa-attn
@@ -139,14 +139,14 @@ source build. Only `--arch`, `--ext` and `--headdim` differ between profiles:
 
 ```bash
 bash tools/build_releases.sh                       # mini, py312, local only
-FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 \
-  FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" \
+FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.5 \
+  FFPA_RELEASE_ENVS="py311 py312 py313 py314" \
   bash tools/build_releases.sh                     # the published set
 ```
 
 The channel is what separates one CUDA toolkit's build from another, and it
 appears twice: in the index directory (`whl/cu13/`) and as the local version of
-the wheel (`0.2.4+cu13`, from `FFPA_RELEASE_CHANNEL`, default `cu13`). A local
+the wheel (`0.2.5+cu13`, from `FFPA_RELEASE_CHANNEL`, default `cu13`). A local
 version cannot be uploaded to PyPI -- the server rejects it -- which is the
 point: the CUDA build lives on an index of its own, and PyPI only ever serves
 the pure-Python one.
@@ -170,23 +170,26 @@ Publish and index it:
 # vipshop.github.io/ffpa-attn/, so the branch root holds whl/cu13/ itself
 git fetch origin gh-pages && git worktree add /tmp/ffpa-attn-pages gh-pages
 bash tools/publish_index.sh \
-  --tag v0.2.4+cu13 \
-  --wheels dist/ffpa_attn-0.2.4+cu13-*.whl \
+  --tag v0.2.5+cu13 \
+  --wheels dist/ffpa_attn-0.2.5+cu13-*.whl \
   --site-repo /tmp/ffpa-attn-pages
 
 # a mirror under a directory of its own, on any other Pages site
 FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
-  bash tools/publish_index.sh --index-only --tag v0.2.4+cu13 \
-  --wheels dist/ffpa_attn-0.2.4+cu13-*.whl --site-repo /path/to/DefTruth.github.io
+  bash tools/publish_index.sh --index-only --tag v0.2.5+cu13 \
+  --wheels dist/ffpa_attn-0.2.5+cu13-*.whl --site-repo /path/to/DefTruth.github.io
 ```
 
 It uploads the wheels as release assets of this repository (requires
 `gh auth login`), rewrites the index in the site work tree and pushes it. The
 tag follows the wheels' convention, release version plus channel as a local
-version: `v0.2.4+cu13`. The index merges into what is already published, so
-older versions keep resolving. Pre-release versions are refused: the `mini`
-profile's `0.2.4.devN` wheels exist to validate the pipeline and are missing most
-headdims, so they must never be what `pip install ffpa-attn` resolves to.
+version: `v0.2.5+cu13`. Create and push the tag before publishing: with the tag
+already present the release attaches to it, otherwise `gh release create` puts
+it on whatever the default branch points at. The index merges into what is
+already published, so older versions keep resolving. Pre-release versions are
+refused: the `mini` profile's `0.2.5.devN` wheels exist to validate the pipeline
+and are missing most headdims, so they must never be what `pip install ffpa-attn`
+resolves to.
 
 ## Building from source instead
 
