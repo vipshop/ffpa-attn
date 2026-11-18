@@ -284,8 +284,10 @@ def _render_landing(
     <pre>{commands}</pre>
     <p>
       <strong>Install torch first.</strong> These wheels are built and tested against
-      <code>torch==2.11.0+cu130</code>; nothing here carries torch of its own, so pip only
-      resolves it when it is missing -- from PyPI, where it is not the cu130 build.
+      <code>torch==2.15.0+cu132</code>; nothing here carries torch of its own, so pip only
+      resolves it when it is missing -- and the open <code>torch>=2.10.0</code> requirement
+      does not pin a build for this toolkit. An older release resolves against another
+      CUDA minor, and the extension links libtorch, so it fails at import.
       Install it from the PyTorch index you normally use, then install this package.
     </p>
     <p>

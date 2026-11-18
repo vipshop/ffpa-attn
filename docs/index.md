@@ -40,10 +40,10 @@
 First, install the prebuilt package from [PyPI](https://pypi.org/project/ffpa-attn/) or build [ffpa-attn](https://github.com/vipshop/ffpa-attn) from source. The CUDA extension ships under the same name from a separate index, one per CUDA toolkit -- see [Installation](user_guide/install.md):
 
 ```bash
-pip3 install "ffpa-attn==0.2.4" # Default, pure Python, Triton + CuTe-DSL backends.
+pip3 install "ffpa-attn==0.2.5" # Default, pure Python, Triton + CuTe-DSL backends.
 # Or, the same distribution with the CUDA extension compiled in (forward only):
 # Linux x86_64, a torch built against CUDA 13 -- install torch first, then.
-pip3 install "ffpa-attn==0.2.4+cu13" --extra-index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
+pip3 install "ffpa-attn==0.2.5+cu13" --extra-index-url https://vipshop.github.io/ffpa-attn/whl/cu13/
 ```
 
 ```bash

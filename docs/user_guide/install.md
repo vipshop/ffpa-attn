@@ -28,9 +28,12 @@ CUDA line is meant to move on its own: one index per toolkit, `whl/cu13/`.
 - glibc 2.38 or newer. The platform tag of every wheel is derived from the
   GLIBC symbols the extension actually needs, so pip refuses to install a wheel
   your system cannot run (the index page lists the exact tags).
-- Python 3.10 - 3.14. The published CPython set is whatever the index page lists.
-- PyTorch built against **CUDA 13** (`torch.version.cuda == "13.0"`), validated
-  against `torch==2.11.0+cu130`.
+- Python 3.11 - 3.14 for the CUDA build (the pure-Python wheel is `py3-none-any`).
+  The published CPython set is whatever the index page lists.
+- PyTorch built against **CUDA 13.2 or newer within CUDA 13**
+  (`torch.version.cuda >= "13.2"`), validated against `torch==2.15.0+cu132`. Earlier
+  13.x builds are not validated and can fail at import: the extension links
+  libtorch, and the declared `torch>=2.10.0` floor alone does not pin this toolkit.
 - An NVIDIA GPU covered by the compiled architectures: `sm_89` (Ada: L20/L40,
   RTX 40 series) or `sm_120f` (Blackwell GeForce: RTX 5090, RTX PRO 5000/6000).
 
@@ -57,7 +60,7 @@ dispatch table in [CUDA Backend](backends/cuda.md).
 ## Install the CUDA build
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.version.cuda)"  # expect ...+cu130 13.0
+python -c "import torch; print(torch.__version__, torch.version.cuda)"  # expect 13.2
 pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
   --extra-index-url https://pypi.org/simple
 ```
@@ -67,7 +70,7 @@ depends on. Install torch **first**, from the PyTorch index you normally use --
 the same two-index command then resolves everything else:
 
 ```bash
-pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu130
+pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cu132
 pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
   --extra-index-url https://pypi.org/simple
 ```
@@ -85,13 +88,15 @@ pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ 
 > the one trade-off of an index that carries a single project.
 
 > [!WARNING]
-> `ffpa-attn` requires `torch>=2.10.0`, so if torch is not installed yet, PyPI's
-> build -- which is not the cu130 one -- is a valid candidate for it. Install
-> torch first, as above, or pin it in the same command:
+> `ffpa-attn` requires `torch>=2.10.0`, so if torch is not installed yet, pip may
+> resolve an older release built against another CUDA minor instead of the
+> `2.15.0+cu132` this wheel was compiled against. The extension links libtorch,
+> so a mismatch fails at import. Install torch first, as above, or pin it in the
+> same command:
 >
 > ```bash
 > pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ \
->   --extra-index-url https://pypi.org/simple "torch==2.11.0"
+>   --extra-index-url https://pypi.org/simple "torch==2.15.0"
 > ```
 
 > [!WARNING]
