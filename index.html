@@ -15,8 +15,10 @@
     <pre>pip install ffpa-attn --index-url https://vipshop.github.io/ffpa-attn/whl/cu13/ --extra-index-url https://pypi.org/simple</pre>
     <p>
       <strong>Install torch first.</strong> These wheels are built and tested against
-      <code>torch==2.11.0+cu130</code>; nothing here carries torch of its own, so pip only
-      resolves it when it is missing -- from PyPI, where it is not the cu130 build.
+      <code>torch==2.15.0+cu132</code>; nothing here carries torch of its own, so pip only
+      resolves it when it is missing -- and the open <code>torch>=2.10.0</code> requirement
+      does not pin a build for this toolkit. An older release resolves against another
+      CUDA minor, and the extension links libtorch, so it fails at import.
       Install it from the PyTorch index you normally use, then install this package.
     </p>
     <p>
@@ -45,6 +47,10 @@
       <li><code>ffpa_attn-0.2.4+cu13-cp312-cp312-manylinux_2_38_x86_64.whl</code></li>
       <li><code>ffpa_attn-0.2.4+cu13-cp313-cp313-manylinux_2_38_x86_64.whl</code></li>
       <li><code>ffpa_attn-0.2.4+cu13-cp314-cp314-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.5+cu13-cp311-cp311-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.5+cu13-cp312-cp312-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.5+cu13-cp313-cp313-manylinux_2_38_x86_64.whl</code></li>
+      <li><code>ffpa_attn-0.2.5+cu13-cp314-cp314-manylinux_2_38_x86_64.whl</code></li>
     </ul>
   </body>
 </html>
