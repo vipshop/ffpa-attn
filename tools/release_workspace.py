@@ -19,7 +19,7 @@ the per-headdim translation units are generated under
 
 Usage:
     tools/release_workspace.py --source-root . --workspace .tmp/release/py312 \\
-        --package-name ffpa-attn [--version 0.2.4+cu13]
+        --package-name ffpa-attn [--version <version>+cu13]
 """
 
 from __future__ import annotations

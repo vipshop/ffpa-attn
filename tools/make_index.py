@@ -23,7 +23,7 @@ against them stops resolving. A file that is rebuilt under the same name
 replaces its own anchor, so a re-release cannot leave two hashes for one file.
 
 The wheels are the CUDA build of a distribution that also exists on PyPI, and
-they carry a local version (``0.2.4+cu13``) for that reason: it sorts above the
+they carry a local version (``+cu13``) for that reason: it sorts above the
 plain release, so pip prefers this build whenever both indexes are candidates,
 and an already installed pure-Python wheel of the same release no longer
 satisfies the requirement as-is. docs/user_guide/install.md is that note in the
@@ -36,7 +36,7 @@ Usage::
     # the project Pages branch: an empty prefix, because the repository name
     # already supplies the ffpa-attn/ path
     tools/make_index.py --out <gh-pages worktree> --prefix "" \\
-        --release-url https://github.com/vipshop/ffpa-attn/releases/download/v0.2.4+cu13 \\
+        --release-url https://github.com/vipshop/ffpa-attn/releases/download/vX.Y.Z+cu13 \\
         --site-url https://vipshop.github.io/ffpa-attn dist/*.whl
     # a mirror on another site, under a directory of its own
     tools/make_index.py --out <other site> --prefix ffpa-attn \\
@@ -339,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     "--release-url",
     required=True,
     help="directory URL the wheels are served from, e.g. "
-    "https://github.com/vipshop/ffpa-attn/releases/download/v0.2.4+cu13",
+    "https://github.com/vipshop/ffpa-attn/releases/download/vX.Y.Z+cu13",
   )
   parser.add_argument(
     "--site-url",
