@@ -3,7 +3,7 @@
 #
 # The distribution keeps PyPI's name and the toolkit lives in two places: the
 # index directory it is served under (whl/cu13/) and the wheel's local version
-# (0.2.4+cu13). One command therefore works across toolkits -- only the
+# (<version>+cu13). One command therefore works across toolkits -- only the
 # --index-url changes -- and pip can still tell the CUDA build apart from the
 # pure-Python wheel of the same release.
 #
@@ -23,7 +23,7 @@
 #         build -> wheel -> retag -> index -> pip install path in minutes, which
 #         is what a slow upload link needs while the pipeline itself is still
 #         being worked on. Its version defaults to the setuptools-scm version,
-#         i.e. 0.2.4.devN past the last tag, so it sorts below every release and
+#         i.e. <version>.devN past the last tag, so it sorts below every release and
 #         must never be written to the index.
 #   full  --headdim default (64,128,192,256,320,512), ~80 MB. The published
 #         wheel, which has to carry a release version; the channel is appended
@@ -35,9 +35,9 @@
 #
 # Usage:
 #   bash tools/build_releases.sh                                     # mini, py312
-#   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
-#   FFPA_RELEASE_ENVS="py310 py311 py312 py313 py314" bash tools/build_releases.sh
-#   FFPA_RELEASE_CHANNEL=cu13 FFPA_RELEASE_VERSION=0.2.4 bash tools/build_releases.sh
+#   FFPA_RELEASE_PROFILE=full FFPA_RELEASE_VERSION=<version> bash tools/build_releases.sh
+#   FFPA_RELEASE_ENVS="py311 py312 py313 py314" bash tools/build_releases.sh
+#   FFPA_RELEASE_CHANNEL=cu13 FFPA_RELEASE_VERSION=<version> bash tools/build_releases.sh
 #
 # Environment:
 #   FFPA_RELEASE_PROFILE    mini | full | pure             (default mini)
@@ -236,7 +236,7 @@ $uncommitted"
 }
 
 release_tag() {
-  # One convention for tags and wheels: v0.2.4+cu13 -- the release version, the
+  # One convention for tags and wheels: v<version>+cu13 -- the release version, the
   # channel as its local part. The tag sorts next to the version it belongs to
   # rather than after it.
   echo "v${VERSION%%+*}+${CHANNEL}"

@@ -13,7 +13,7 @@
 # instead of installing.
 #
 # Refuses a version without the channel's local suffix, and a pre-release
-# version: tools/build_releases.sh's mini profile produces 0.2.4.devN wheels for
+# version: tools/build_releases.sh's mini profile produces <version>.devN wheels for
 # pipeline validation, and those must never be what `pip install ffpa-attn`
 # resolves to. The version is read out of the wheel filenames and has to agree
 # with the tag, so a mismatched pair -- a tag naming one version while carrying
@@ -22,8 +22,8 @@
 # Usage:
 #   # the canonical index: the project's Pages branch, whose URL already carries
 #   # the repository name, so the branch root holds whl/cu13/ directly
-#   bash tools/publish_index.sh --tag v0.2.4+cu13 \
-#     --wheels 'dist/ffpa_attn-0.2.4+cu13-*.whl' --site-repo <gh-pages worktree>
+#   bash tools/publish_index.sh --tag v<version>+cu13 \
+#     --wheels 'dist/ffpa_attn-<version>+cu13-*.whl' --site-repo <gh-pages worktree>
 #   # the mirror on a personal site, under a directory of its own
 #   FFPA_SITE_URL=https://deftruth.github.io FFPA_INDEX_PREFIX=ffpa-attn \
 #     bash tools/publish_index.sh --tag ... --wheels ... --site-repo <that checkout>
@@ -74,7 +74,7 @@ while [[ $# -gt 0 ]]; do
     --tag) TAG="$2"; shift 2 ;;
     --wheels)
       # Several paths, because the shell expands a glob before the script sees
-      # it: `--wheels dist/ffpa_attn-0.2.4+cu13-*.whl` arrives as many arguments.
+      # it: `--wheels dist/ffpa_attn-<version>+cu13-*.whl` arrives as many arguments.
       shift
       [[ $# -gt 0 ]] || fail "--wheels requires at least one path"
       while [[ $# -gt 0 && "$1" != --* ]]; do WHEELS+=("$1"); shift; done ;;
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag v0.2.4+cu13"
+[[ -n "$TAG" ]] || fail "--tag is required, e.g. --tag v<version>+cu13"
 [[ ${#WHEELS[@]} -gt 0 ]] || fail "--wheels is required (paths or globs of the built wheels)"
 [[ -n "$SITE_REPO" ]] || fail "--site-repo is required: the working tree of $RELEASE_REPO"
 [[ -d "$SITE_REPO" ]] || fail "no such directory: $SITE_REPO"
@@ -119,7 +119,7 @@ build it with FFPA_RELEASE_CHANNEL=$CHANNEL"
   VERSION="$version"
 done
 # The tag names the release the assets live on, and it carries the channel the
-# way the wheel does: v0.2.4+cu13.
+# way the wheel does: v<version>+cu13.
 [[ "$TAG" == "v${VERSION%%+*}+$CHANNEL" ]] \
   || fail "tag '$TAG' does not name version '$VERSION'; expected 'v${VERSION%%+*}+$CHANNEL'"
 
@@ -158,7 +158,7 @@ ensure_release() {
   # repository's own releases.
   local index_url="$SITE_URL/${PREFIX:+$PREFIX/}whl/$CHANNEL"
   # No --title: GitHub names a release after its tag, and the tag already says
-  # everything the release holds -- v0.2.4+cu13.
+  # everything the release holds -- v<version>+cu13.
   gh release create "$TAG" --repo "$RELEASE_REPO" \
     --latest=false \
     --notes "CUDA-extension wheels of \`$PROJECT\`, built against $CHANNEL. Install with:
