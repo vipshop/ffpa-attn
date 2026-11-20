@@ -538,7 +538,6 @@ from cutlass._mlir.dialects import llvm as _llvm  # noqa: E402
 from cutlass._mlir import ir as _ir  # noqa: E402,F401
 from cutlass._mlir.extras import types as _T  # noqa: E402
 from cutlass.cutlass_dsl import dsl_user_op as _dsl_user_op  # noqa: E402
-import quack.activation as _quack_activation  # noqa: E402
 
 #: Minimax coefficients for ``2**f`` on ``f in [0, 1)``, ascending degree.
 POLY_EX2_DEG3 = (
@@ -600,10 +599,10 @@ def ex2_emulation_2(
   xy_rounded = cute.arch.add_packed_f32x2(
     xy_clamped, (fp32_round_int, fp32_round_int), rnd="rm"
   )
-  xy_rounded_back = _quack_activation.sub_packed_f32x2(
+  xy_rounded_back = cute.arch.sub_packed_f32x2(
     xy_rounded, (fp32_round_int, fp32_round_int)
   )
-  xy_frac = _quack_activation.sub_packed_f32x2(xy_clamped, xy_rounded_back)
+  xy_frac = cute.arch.sub_packed_f32x2(xy_clamped, xy_rounded_back)
   poly = POLY_EX2_DEG3 if poly_degree == 3 else POLY_EX2_DEG3
   assert poly_degree == 3, "only the degree-3 fit is ported"
   xy_frac_ex2 = evaluate_polynomial_2(*xy_frac, poly, loc=loc, ip=ip)
