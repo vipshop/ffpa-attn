@@ -587,9 +587,8 @@ def _ffpa_attn_backward_sm80(
     # derived from batch * seqlen) and a fixed tile loop inside the CTA,
     # without the TileScheduler / cu_seqlens awareness that the SM90 path
     # has.  For varlen inputs we therefore decompose into per-segment
-    # dense calls, padding each segment to a tile multiple and copying
-    # only the valid rows back.  This avoids reworking the kernel itself
-    # for a workload that is rare on Ampere/Ada inference silicon.
+    # dense calls. The dense launcher pads its working buffers and returns
+    # only the valid rows for each segment.
     # TODO: Implement a native varlen path for SM80 if there is demand,
     # potentially reusing some of the SM90 infrastructure.
     for batch_idx in range(cu_seqlens_q.numel() - 1):
@@ -610,17 +609,9 @@ def _ffpa_attn_backward_sm80(
       lse_seg = lse[:, q_start:q_end].unsqueeze(0).contiguous()
       dlse_seg = dlse[:, q_start:q_end].unsqueeze(0).contiguous(
       ) if dlse is not None else None
-      q_len = q_end - q_start
-      k_len = k_end - k_start
-      q_len_rounded = (
-        q_len + SM80_BWD_DQ_TILE_M - 1
-      ) // SM80_BWD_DQ_TILE_M * SM80_BWD_DQ_TILE_M
-      k_len_rounded = (
-        k_len + SM80_BWD_DKDV_TILE_N - 1
-      ) // SM80_BWD_DKDV_TILE_N * SM80_BWD_DKDV_TILE_N
-      dq_seg = q_seg.new_zeros((1, q_len_rounded, num_head, head_dim))
-      dk_seg = k_seg.new_zeros((1, k_len_rounded, _num_head_kv, head_dim))
-      dv_seg = v_seg.new_zeros((1, k_len_rounded, _num_head_kv, head_dim_v))
+      dq_seg = q_seg.new_zeros(q_seg.shape, dtype=dq.dtype)
+      dk_seg = k_seg.new_zeros(k_seg.shape, dtype=dk.dtype)
+      dv_seg = v_seg.new_zeros(v_seg.shape, dtype=dv.dtype)
       _ffpa_attn_backward_sm80_dense(
         q_seg,
         k_seg,
@@ -637,9 +628,9 @@ def _ffpa_attn_backward_sm80(
         device_arch,
         cute_arch_key,
       )
-      dq[q_start:q_end].copy_(dq_seg[:, :q_len].squeeze(0))
-      dk[k_start:k_end].copy_(dk_seg[:, :k_len].squeeze(0))
-      dv[k_start:k_end].copy_(dv_seg[:, :k_len].squeeze(0))
+      dq[q_start:q_end].copy_(dq_seg.squeeze(0))
+      dk[k_start:k_end].copy_(dk_seg.squeeze(0))
+      dv[k_start:k_end].copy_(dv_seg.squeeze(0))
     return dq, dk, dv
 
   q_batch_seqlen_shape = (batch_size, seqlen_q)
