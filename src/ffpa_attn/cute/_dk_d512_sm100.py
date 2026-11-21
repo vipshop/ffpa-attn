@@ -274,14 +274,15 @@ class FFPAAttnBwdDKSm100D512:
       self.tmem_region_intervals(self.TARGET_TMEM_DK_SLICE_STRIDE)
     )
 
-    # Non-causal only: uniform-192 measured a causal loss, a non-causal win.
+    # Non-causal only: the larger uniform allocation reduces DSL 4.8 spills.
     self.despill_wg2 = not self.is_causal
     self.num_regs_compute = 128
-    # 192 unspills the mma warp (dense LDL/STL at 128); wg2 setmaxnreg uniform.
-    self.num_regs_mma = 192 if self.despill_wg2 else 128
+    # 224 reduces the DSL 4.8 dK spill path (dense LDL/STL at 128); wg2
+    # setmaxnreg remains uniform and the budget assertion below bounds it.
+    self.num_regs_mma = 224 if self.despill_wg2 else 128
     self.num_regs_load = 96
 
-    # Per-warpgroup budget from one 64K file: the three sum <= 512 (448 / 384).
+    # Per-warpgroup budget from one 64K file: the three sum <= 512 (480 / 384).
     assert (
       self.num_regs_compute * (self.num_compute_warps // 4) +
       max(self.num_regs_mma, self.num_regs_load) <= 512

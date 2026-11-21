@@ -283,8 +283,10 @@ class FFPAAttnBwdDVSm100D512:
     # Ledger gate (no fragments yet): disjoint regions, one S region per stage.
     check_tmem_intervals(self.tmem_region_intervals(self.tmem_dV_slice_stride))
 
-    self.num_regs_compute = 128
-    self.num_regs_mma = 128
+    # DSL 4.8's larger dV live set needs a wider WG2 quota. The two compute
+    # warpgroups release to 96 registers so the four-warp WG2 can acquire 160.
+    self.num_regs_compute = 96
+    self.num_regs_mma = 160
     self.num_regs_empty = 96
     self.num_regs_load = 96
 
@@ -853,6 +855,17 @@ class FFPAAttnBwdDVSm100D512:
       barrier_id=self.cta_sync_bar_id, number_of_threads=self.threads_per_cta
     )
 
+    # setmaxnreg is warpgroup-uniform. Rebalance once before dispatch so every
+    # warp in each group executes one identical instruction and the register
+    # pool can satisfy WG2's larger quota without a blocking increase.
+    if warp_idx < self.num_compute_warps:
+      cute.arch.setmaxregister_decrease(self.num_regs_compute)
+    else:
+      cute.arch.setmaxregister_increase(self.num_regs_mma)
+    cute.arch.barrier(
+      barrier_id=self.cta_sync_bar_id, number_of_threads=self.threads_per_cta
+    )
+
     if const_expr(self.is_causal):
       # Causal builds every consumer view once here; non-causal per role
       # (measured).  c_* names: the role arms rebind them without a yield.
@@ -927,7 +940,6 @@ class FFPAAttnBwdDVSm100D512:
         )
     # ///  LOAD  ///
     elif warp_idx == self.load_warp_id:
-      cute.arch.setmaxregister_decrease(self.num_regs_load)
       if const_expr(self.is_causal):
         sK, sQ, sdOT, sLSE = c_sK, c_sQ, c_sdOT, c_sLSE
       else:
@@ -990,7 +1002,6 @@ class FFPAAttnBwdDVSm100D512:
     # ///  dOT LOAD (separate issuer)  ///
     elif warp_idx == self.dot_load_warp_id:
       if const_expr(self.split_dot_issuer):
-        cute.arch.setmaxregister_decrease(self.num_regs_load)
         # Only the per-role build arrives; the causal one waited above.
         if const_expr(not self.is_causal):
           tmem_alloc_barrier.arrive()
@@ -1013,14 +1024,11 @@ class FFPAAttnBwdDVSm100D512:
           load_mma_dOT_producer,
         )
       else:
-        cute.arch.setmaxregister_decrease(self.num_regs_empty)
         if const_expr(not self.is_causal):
           tmem_alloc_barrier.arrive()
 
     # ///  MMA  ///
     elif warp_idx == self.mma_warp_id:
-      cute.arch.setmaxregister_increase(self.num_regs_mma)
-
       if const_expr(self.is_causal):
         sQ, tSTrK, tSTrQ = c_sQ, c_tSTrK, c_tSTrQ
         tSTrK_tmem, tSTrQ_tmem, tiled_s2t, tKsK_s2t, tKtK_s2t, tKT_addr = (
@@ -1087,8 +1095,6 @@ class FFPAAttnBwdDVSm100D512:
 
     # ///  Compute  ///
     elif warp_idx >= compute_lo and warp_idx <= compute_hi:
-      cute.arch.setmaxregister_increase(self.num_regs_compute)
-
       if const_expr(self.is_causal):
         tSTtST_stages, sP, sLSE, tdVtdV_slices, s_epi_dV = (
           c_tSTtST_stages,
@@ -1142,7 +1148,6 @@ class FFPAAttnBwdDVSm100D512:
       )
 
     else:
-      cute.arch.setmaxregister_decrease(self.num_regs_empty)
       # Same asymmetry as the dOT arm: only the per-role build arrives.
       if const_expr(not self.is_causal):
         tmem_alloc_barrier.arrive()
