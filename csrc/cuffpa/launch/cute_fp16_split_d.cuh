@@ -109,14 +109,14 @@ void launch_cute_fwd_split_d_sm120_v(torch::Tensor Q, torch::Tensor K,
   const unsigned long long philox_offset_u =
       static_cast<unsigned long long>(philox_offset);
 
+  const c10::cuda::OptionalCUDAGuard device_guard(Q.device());
+  auto stream = at::cuda::getCurrentCUDAStream();
+
   const dim3 block(kNumThreads, 1, 1);
   const int MB = utils::div_ceil(Nq, kBr);
   const FfpaCausalLptPlan lpt_plan = ffpa_causal_lpt_plan(
       causal, MB, Nb, Nh, Nh_kv, 2LL * Nkv * kHeadDim * sizeof(kDataType));
   const dim3 grid = lpt_plan.grid;
-
-  const c10::cuda::OptionalCUDAGuard device_guard(Q.device());
-  auto stream = at::cuda::getCurrentCUDAStream();
 
   const int total_q_rows = Nb * Nh * Nq;
   const int total_kv_rows = Nb * Nh_kv * Nkv;

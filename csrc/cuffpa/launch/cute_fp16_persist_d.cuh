@@ -236,14 +236,14 @@ void launch_cute_fwd_persist_d_sm120_v(torch::Tensor Q, torch::Tensor K,
   const int kTotalSmemBytes =
       kBaseSmemBytes + (int)bias_extra + (dropout_bitmap_on ? kBitmapBytes : 0);
 
+  const c10::cuda::OptionalCUDAGuard device_guard(Q.device());
+  auto stream = at::cuda::getCurrentCUDAStream();
+
   const dim3 block(kNumThreads, 1, 1);
   const int MB = utils::div_ceil(Nq, kBr);
   const FfpaCausalLptPlan lpt_plan = ffpa_causal_lpt_plan(
       causal, MB, Nb, Nh, Nh_kv, 2LL * Nkv * kHeadDim * kElemSize);
   const dim3 grid = lpt_plan.grid;
-
-  const c10::cuda::OptionalCUDAGuard device_guard(Q.device());
-  auto stream = at::cuda::getCurrentCUDAStream();
 
   const int total_q_rows = Nb * Nh * Nq;
   const int total_kv_rows = Nb * Nh_kv * Nkv;
