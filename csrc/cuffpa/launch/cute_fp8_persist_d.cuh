@@ -338,7 +338,10 @@ void launch_cute_fwd_persist_d_fp8_sm120_v(
               "ffpa_attn: q_start_row must be in [0, Nq)");
   TORCH_CHECK(q_start_row % 128 == 0,
               "ffpa_attn: q_start_row must be a multiple of kBr=128");
-  const dim3 grid(utils::div_ceil(Nq - q_start_row, kBr), Nb * Nh, 1);
+  const int MB = utils::div_ceil(Nq - q_start_row, kBr);
+  const FfpaCausalLptPlan lpt_plan =
+      ffpa_causal_lpt_plan(causal, MB, Nb, Nh, Nh_kv, 2LL * Nkv * kHeadDim);
+  const dim3 grid = lpt_plan.grid;
   // P quant granularity: fixed 1/448 scale (fast, default) vs per-row scale
   // (higher accuracy). Opt into per-row with FFPA_FP8_PQUANT_PER_ROW=1.
   using TmaQ = decltype(tma_q);
@@ -351,10 +354,10 @@ void launch_cute_fwd_persist_d_fp8_sm120_v(
     kernel<<<grid, block, kSmemBytesBias, stream>>>(
         tma_q, tma_k, tma_v, tma_o, tma_bias_sel_arg, O_ptr, softmax_lse_ptr,
         q_scale.data_ptr<float>(), k_scale.data_ptr<float>(),
-        v_scale.data_ptr<float>(), Nq, Nkv, Nh, Nh_kv, scale, Tc, causal,
-        total_q_rows, total_kv_rows, n_rb_q, n_rb_kv, q_start_row, km_f32_ptr,
-        vm_kernel, nhd_out, bias.ptr, bias.dtype, bias.stride_b, bias.stride_h,
-        bias.stride_m, bias.stride_n,
+        v_scale.data_ptr<float>(), Nq, Nkv, Nh, Nh_kv, scale, Tc,
+        lpt_plan.causal_arg, total_q_rows, total_kv_rows, n_rb_q, n_rb_kv,
+        q_start_row, km_f32_ptr, vm_kernel, nhd_out, bias.ptr, bias.dtype,
+        bias.stride_b, bias.stride_h, bias.stride_m, bias.stride_n,
         bias_plan.mode != 0 ? bias_plan.m_total : (long long)1);
   };
   // kHasAttnBias/kBiasMode are template parameters, so the variant table

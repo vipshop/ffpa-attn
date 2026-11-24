@@ -84,9 +84,25 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_sm120(
   constexpr int kQTileElements = cosize(SmemLayoutQ{});
   constexpr int kKVTileElements = cosize(SmemLayoutKV{});
 
-  const int Nb_id = blockIdx.y / Nh;
-  const int Nh_id = blockIdx.y % Nh;
-  const int Q_tile_id = blockIdx.x;
+  // Dense / SPT fallback (causal != 2): grid = (MB, Nb * Nh, 1)
+  // Causal L2-aware LPT  (causal == 2): grid = (heads_per_sec, MB, Nb * n_sec)
+  int Nb_id, Nh_id, Q_tile_id, Nb_grid;
+  if (causal == 2) {
+    const int heads_per_sec = gridDim.x;
+    const int n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
+    Nb_id = blockIdx.z / n_sec;
+    const int sec_id = blockIdx.z % n_sec;
+    Nh_id = sec_id * heads_per_sec + blockIdx.x;
+    Q_tile_id = gridDim.y - 1 - blockIdx.y;
+    Nb_grid = gridDim.z / n_sec;
+    if (Nh_id >= Nh)
+      return;
+  } else {
+    Nb_id = blockIdx.y / Nh;
+    Nh_id = blockIdx.y % Nh;
+    Q_tile_id = blockIdx.x;
+    Nb_grid = gridDim.y / Nh;
+  }
   const int group_size = Nh / Nh_kv;
   const int kv_head_idx = Nh_id / group_size;
   const int Br_base = Q_tile_id * kBr;
@@ -201,7 +217,7 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_sm120(
           // domain_offset, head as a kHeadDim-wide column tile.
           return domain_offset(make_coord(static_cast<long>(Nb_id) * Nq, 0),
                                tma_q.get_tma_tensor(make_shape(
-                                   static_cast<long>(gridDim.y / Nh) * Nq,
+                                   static_cast<long>(Nb_grid) * Nq,
                                    static_cast<long>(Nh) * kHeadDim)));
         else
           return domain_offset(
@@ -217,7 +233,7 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_sm120(
         if constexpr (kNhdKV)
           return domain_offset(make_coord(static_cast<long>(Nb_id) * Nkv, 0),
                                tma.get_tma_tensor(make_shape(
-                                   static_cast<long>(gridDim.y / Nh) * Nkv,
+                                   static_cast<long>(Nb_grid) * Nkv,
                                    static_cast<long>(Nh_kv) * kHeadDim)));
         else
           return domain_offset(

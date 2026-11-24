@@ -119,9 +119,30 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   static_assert(cosize(SmemLayoutO{}) <= kStagesPV * cosize(SmemLayoutV{}),
                 "TMA-O: O staging buffer must fit in reused V-stage smem");
 
-  const int Nb_id = blockIdx.y / Nh;
-  const int Nh_id = blockIdx.y % Nh;
-  const int Q_tile_id = blockIdx.x;
+  // Dense / SPT fallback (causal != 2): grid = (MB, Nb * Nh, 1)
+  // Causal L2-aware LPT  (causal == 2): grid = (heads_per_sec, MB, Nb * n_sec)
+  // Stash decoded CTA coords in static smem (within existing 2KB alignment)
+  // and reload in the epilogue so ptxas doesn't pin extra live registers across
+  // the 255-reg KV loop (avoids ~1.8% dense/long-N spill regression on D=512).
+  __shared__ int cta_coord[3];
+  int Nb_id, Nh_id, Q_tile_id;
+  long nb;
+  if (causal == 2) {
+    const int heads_per_sec = gridDim.x;
+    const int n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
+    Nb_id = blockIdx.z / n_sec;
+    const int sec_id = blockIdx.z % n_sec;
+    Nh_id = sec_id * heads_per_sec + blockIdx.x;
+    Q_tile_id = gridDim.y - 1 - blockIdx.y;
+    nb = gridDim.z / n_sec;
+    if (Nh_id >= Nh)
+      return;
+  } else {
+    Nb_id = blockIdx.y / Nh;
+    Nh_id = blockIdx.y % Nh;
+    Q_tile_id = blockIdx.x;
+    nb = gridDim.y / Nh;
+  }
   const int group_size = Nh / Nh_kv;
   const int kv_head_idx = Nh_id / group_size;
   const int Br_base = Q_tile_id * kBr;
@@ -147,7 +168,6 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   // NHD (diffusers BNHD): flat (B*N, H*D) TMA rows with the head as a
   // kHeadDim-wide column tile; batch rides domain_offset. BHND: per-head row
   // offset into a plain (B*H*N, D) row-major tensor.
-  const long nb = gridDim.y / Nh;
   auto mQ = [&] {
     if constexpr (kNhdQ)
       return domain_offset(
@@ -239,6 +259,9 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
   //     pass N early. phase = (chunk_index / kStages) & 1 flips every kStages
   //     chunks (0,0,...,0 | 1,1,...,1 | 0,...).
   if (tid == 0) {
+    cta_coord[0] = Nb_id;
+    cta_coord[1] = Nh_id;
+    cta_coord[2] = Q_tile_id;
     for (int s = 0; s < kStagesQK; ++s) {
       TmaBarrier::init(&qk_full[s], 1);
       CtaBarrier::init(&qk_empty[s], kNumThreads);
@@ -442,11 +465,12 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
     // d_chunk column tile of a per-head row offset tensor.
     auto gQ = [&] {
       if constexpr (kNhdQ)
-        return local_tile(mQ, Shape<Int<kBr>, Int<kQKDChunk>>{},
-                          make_coord(Q_tile_id, Nh_id * kDChunksQK + d_chunk));
+        return local_tile(
+            mQ, Shape<Int<kBr>, Int<kQKDChunk>>{},
+            make_coord(cta_coord[2], cta_coord[1] * kDChunksQK + d_chunk));
       else
         return local_tile(mQ, Shape<Int<kBr>, Int<kQKDChunk>>{},
-                          make_coord(Q_tile_id, d_chunk));
+                          make_coord(cta_coord[2], d_chunk));
     }();
     auto gK = [&] {
       if constexpr (kNhdKV)
@@ -883,11 +907,16 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
     // Nh*kHeadDim); the nhd_out branch only picks coordinates, the batched
     // R->S->TMA copy path is shared. Column tiles fold the head in (the
     // v_chunk walk stays chunk-local), mirroring the NHD Q load.
+    const int ep_Nb_id = cta_coord[0];
+    const int ep_Nh_id = cta_coord[1];
+    const int ep_Q_tile_id = cta_coord[2];
+    const int ep_Br_base = ep_Q_tile_id * kBr;
+    const int ep_q_row_offset = (ep_Nb_id * Nh + ep_Nh_id) * Nq;
     const int nb = total_q_rows / (Nh * Nq);
-    const int o_row_base = nhd_out ? (Nb_id * Nq) : q_row_offset;
+    const int o_row_base = nhd_out ? (ep_Nb_id * Nq) : ep_q_row_offset;
     const int o_rows = nhd_out ? (nb * Nq) : total_q_rows;
     const int o_cols = nhd_out ? (Nh * kHeadDim) : kHeadDim;
-    const int o_col_tile = nhd_out ? (Nh_id * kDChunksV) : 0;
+    const int o_col_tile = nhd_out ? (ep_Nh_id * kDChunksV) : 0;
     auto mO_tma =
         domain_offset(make_coord(o_row_base, 0),
                       tma_o.get_tma_tensor(make_shape(o_rows, o_cols)));
@@ -900,9 +929,9 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
     // int64 base/stride: int32 (b*H+h)*Nq*kHeadDim wraps past 2^31 O
     // elements; see persist_d.cuh (PR #387 sibling).
     const long long O_gmem_offset =
-        nhd_out ? ((long long)Nb_id * Nq * Nh + Nh_id) * kHeadDim
-                : (long long)Nb_id * Nh * Nq * kHeadDim +
-                      (long long)Nh_id * Nq * kHeadDim;
+        nhd_out ? ((long long)ep_Nb_id * Nq * Nh + ep_Nh_id) * kHeadDim
+                : (long long)ep_Nb_id * Nh * Nq * kHeadDim +
+                      (long long)ep_Nh_id * Nq * kHeadDim;
     const long long o_row_stride =
         nhd_out ? (long long)Nh * kHeadDim : kHeadDim;
     auto mO = make_tensor(make_gmem_ptr(O + O_gmem_offset),
@@ -911,7 +940,7 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
     auto cO = make_identity_tensor(Shape<Int<kBr>, Int<kVDChunk>>{});
     auto tOcO = thr_mma_pv.partition_C(cO);
 
-    if (Br_base + kBr <= Nq) {
+    if (ep_Br_base + kBr <= Nq) {
       // aligned: batched R->S->G via TMA store
 #pragma unroll
       for (int batch = 0; batch < kNBatches; ++batch) {
@@ -947,8 +976,9 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
           int v_chunk = batch * kVChunksPerBatch + v_in;
           auto sO_v = make_tensor(make_smem_ptr(shm + v_in * kOTileElems),
                                   SmemLayoutO{});
-          auto gO_tma = local_tile(mO_tma, Shape<Int<kBr>, Int<kVDChunk>>{},
-                                   make_coord(Q_tile_id, o_col_tile + v_chunk));
+          auto gO_tma =
+              local_tile(mO_tma, Shape<Int<kBr>, Int<kVDChunk>>{},
+                         make_coord(ep_Q_tile_id, o_col_tile + v_chunk));
           auto tCgO_tma = o_slice.partition_D(gO_tma);
           auto tOsO = o_slice.partition_S(sO_v);
           if (tid == 0) {
@@ -978,11 +1008,11 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
         }
         auto tCrOHalf = ffpa_cute::convert_type<Element>(tCrO);
         auto gO = local_tile(mO, Shape<Int<kBr>, Int<kVDChunk>>{},
-                             make_coord(Q_tile_id, v_chunk));
+                             make_coord(ep_Q_tile_id, v_chunk));
         auto tCgO = thr_mma_pv.partition_C(gO);
 #pragma unroll
         for (int i = 0; i < size(tCrOHalf); ++i) {
-          const int global_row = Br_base + get<0>(tOcO(i));
+          const int global_row = ep_Br_base + get<0>(tOcO(i));
           if (global_row < Nq)
             tCgO(i) = tCrOHalf(i);
         }
@@ -991,18 +1021,18 @@ __global__ void __launch_bounds__(Traits::kNumThreads, 1)
 
     // LSE write: overlaps last batch's TMA drain (aligned) or serial (tail).
     if (softmax_lse != nullptr) {
-      const int lse_base = Nb_id * Nh * Nq + Nh_id * Nq;
+      const int lse_base = ep_Nb_id * Nh * Nq + ep_Nh_id * Nq;
 #pragma unroll
       for (int row = 0; row < kORows; ++row) {
         const float lse = (row_max[row] + log2f(row_sum[row])) * FFPA_M_LN2;
-        const int global_row = Br_base + get<0>(tScS_rc(row, 0));
+        const int global_row = ep_Br_base + get<0>(tScS_rc(row, 0));
         if (global_row < Nq)
           softmax_lse[lse_base + global_row] = lse;
       }
     }
 
     // Final drain: only if TMA stores were issued (aligned path).
-    if (Br_base + kBr <= Nq)
+    if (ep_Br_base + kBr <= Nq)
       tma_store_wait<0>();
   }
 #endif  // defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900

@@ -162,9 +162,23 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
   constexpr int kKTileElements = cosize(SmemLayoutK{});
   constexpr int kVTileElements = cosize(SmemLayoutV{});
 
-  const int Nb_id = blockIdx.y / Nh;
-  const int Nh_id = blockIdx.y % Nh;
-  const int Q_tile_id = blockIdx.x;
+  // Dense / SPT fallback (causal != 2): grid = (MB, Nb * Nh, 1)
+  // Causal L2-aware LPT  (causal == 2): grid = (heads_per_sec, MB, Nb * n_sec)
+  int Nb_id, Nh_id, Q_tile_id;
+  if (causal == 2) {
+    const int heads_per_sec = gridDim.x;
+    const int n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
+    Nb_id = blockIdx.z / n_sec;
+    const int sec_id = blockIdx.z % n_sec;
+    Nh_id = sec_id * heads_per_sec + blockIdx.x;
+    Q_tile_id = gridDim.y - 1 - blockIdx.y;
+    if (Nh_id >= Nh)
+      return;
+  } else {
+    Nb_id = blockIdx.y / Nh;
+    Nh_id = blockIdx.y % Nh;
+    Q_tile_id = blockIdx.x;
+  }
   const int group_size = Nh / Nh_kv;
   const int kv_head_idx = Nh_id / group_size;
   const int Br_base = Q_tile_id * kBr;

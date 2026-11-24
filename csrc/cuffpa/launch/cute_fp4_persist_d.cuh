@@ -472,6 +472,17 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
   const int num_ctas =
       causal ? total_work : std::min(total_work, prop->multiProcessorCount);
   const dim3 grid(num_ctas, 1, 1);
+  // FA-4 §3.4 L2-aware head section width for causal LPT work_id mapping.
+  // Skip LPT when mb <= 8 (1K causal is short enough that extra work_id
+  // divisions outweigh tail hiding) or when sectioning degenerates to 1 head.
+  const long long kv_head_bytes =
+      (long long)Nkv_pad * kHeadDim * (kPvMxfp8 ? 3 : 2) / 2;
+  int lpt_heads_per_sec = 0;
+  if (causal && mb > 8) {
+    const int hps = ffpa_causal_lpt_heads_per_sec(Nh, Nh_kv, kv_head_bytes);
+    if (hps > 1)
+      lpt_heads_per_sec = hps;
+  }
   const auto launch_with = [&](auto bias_tag, auto tma_bias_sel, auto mode_c,
                                auto b4_c) {
     using TmaBiasSel = decltype(tma_bias_sel);
@@ -493,7 +504,8 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
         Nkv_pad, Nh, Nh_kv, scale, Tc, causal, total_q_rows, Nb, q_start_row,
         nhd_out, bias.ptr, bias.dtype, bias.stride_b, bias.stride_h,
         bias.stride_m, bias.stride_n,
-        bias_plan.mode != 0 ? bias_plan.m_total : (long long)1);
+        bias_plan.mode != 0 ? bias_plan.m_total : (long long)1,
+        lpt_heads_per_sec);
   };
   // Compile-time pinned variant: only this tag's kernel table instantiates.
   if constexpr (kBiasOn == 0) {

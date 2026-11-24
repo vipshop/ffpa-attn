@@ -182,4 +182,58 @@ static inline FfpaBiasTilePlan ffpa_bias_tile_plan_of(
   return plan;
 }
 
+// FA-4 §3.4 L2-aware causal LPT scheduling: traverses
+//   (heads_in_section, mblocks reversed, head_sections, batches)
+// so (1) heaviest causal mblocks launch first within each section, (2) GQA
+// query heads sharing a KV head stay in the same section, and (3) batches stay
+// outermost so cross-batch KV traffic never thrashes L2 across mblocks.
+static inline int ffpa_causal_lpt_heads_per_sec(int Nh, int Nh_kv,
+                                                long long kv_head_bytes) {
+  const int group_size = Nh / Nh_kv;
+  auto* prop = at::cuda::getCurrentDeviceProperties();
+  // Budget half of L2 for the active KV working set, leaving headroom for
+  // Q/O/scales so multi-batch and long-N causal keep high L2 hit rate.
+  const long long l2_budget =
+      std::max<long long>(1LL << 20, (long long)prop->l2CacheSize / 2);
+  if (kv_head_bytes <= 0 || (long long)Nh_kv * kv_head_bytes <= l2_budget)
+    return Nh;
+  const int max_kv_per_sec =
+      std::max<int>(1, static_cast<int>(l2_budget / kv_head_bytes));
+  // Prefer the largest exact divisor of Nh_kv within [ceil(max/2), max] so
+  // every section has equal width with zero padding CTAs and no tiny remainder.
+  for (int d = max_kv_per_sec; d >= (max_kv_per_sec + 1) / 2 && d >= 1; --d) {
+    if (Nh_kv % d == 0)
+      return d * group_size;
+  }
+  const int n_sec = (Nh_kv + max_kv_per_sec - 1) / max_kv_per_sec;
+  const int kv_per_sec = (Nh_kv + n_sec - 1) / n_sec;
+  return std::min(Nh, kv_per_sec * group_size);
+}
+
+struct FfpaCausalLptPlan {
+  dim3 grid;
+  int causal_arg;  // 0 = dense, 1 = causal SPT fallback, 2 = causal L2-LPT
+};
+
+static inline FfpaCausalLptPlan ffpa_causal_lpt_plan(int causal, int MB, int Nb,
+                                                     int Nh, int Nh_kv,
+                                                     long long kv_head_bytes) {
+  const dim3 default_grid(MB, Nb * Nh, 1);
+  if (!causal)
+    return {default_grid, 0};
+  int heads_per_sec = ffpa_causal_lpt_heads_per_sec(Nh, Nh_kv, kv_head_bytes);
+  // Single-head sections degenerate to per-head reverse-mblock (no cross-head
+  // tail hiding, slightly hurts large-D L2 prefetcher); keep original SPT.
+  if (heads_per_sec <= 1)
+    return {default_grid, causal};
+  int n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
+  while ((long long)Nb * n_sec > 65535LL && heads_per_sec < Nh) {
+    heads_per_sec = std::min(Nh, heads_per_sec * 2);
+    n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
+  }
+  if ((long long)Nb * n_sec > 65535LL)
+    return {default_grid, causal};
+  return {dim3(heads_per_sec, MB, Nb * n_sec), 2};
+}
+
 #endif  // ENABLE_FFPA_CUTE_EXT
