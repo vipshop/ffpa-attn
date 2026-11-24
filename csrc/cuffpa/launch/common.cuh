@@ -221,18 +221,23 @@ static inline FfpaCausalLptPlan ffpa_causal_lpt_plan(int causal, int MB, int Nb,
   const dim3 default_grid(MB, Nb * Nh, 1);
   if (!causal)
     return {default_grid, 0};
+  // Normalize any non-zero causal flag to 1 on SPT fallback so tag 2 is
+  // reserved exclusively for the LPT grid; also fall back when MB exceeds
+  // CUDA's gridDim.y limit (65535).
+  if (MB > 65535)
+    return {default_grid, 1};
   int heads_per_sec = ffpa_causal_lpt_heads_per_sec(Nh, Nh_kv, kv_head_bytes);
   // Single-head sections degenerate to per-head reverse-mblock (no cross-head
   // tail hiding, slightly hurts large-D L2 prefetcher); keep original SPT.
   if (heads_per_sec <= 1)
-    return {default_grid, causal};
+    return {default_grid, 1};
   int n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
   while ((long long)Nb * n_sec > 65535LL && heads_per_sec < Nh) {
     heads_per_sec = std::min(Nh, heads_per_sec * 2);
     n_sec = (Nh + heads_per_sec - 1) / heads_per_sec;
   }
   if ((long long)Nb * n_sec > 65535LL)
-    return {default_grid, causal};
+    return {default_grid, 1};
   return {dim3(heads_per_sec, MB, Nb * n_sec), 2};
 }
 
