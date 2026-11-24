@@ -104,11 +104,14 @@ void launch_cute_fwd_split_d_m4n2_sm120_v(torch::Tensor Q, torch::Tensor K,
   const unsigned long long philox_offset_u =
       static_cast<unsigned long long>(philox_offset);
 
-  const dim3 block(kNumThreads, 1, 1);
-  const dim3 grid(utils::div_ceil(Nq, kBr), Nb * Nh, 1);
-
   const c10::cuda::OptionalCUDAGuard device_guard(Q.device());
   auto stream = at::cuda::getCurrentCUDAStream();
+
+  const dim3 block(kNumThreads, 1, 1);
+  const int MB = utils::div_ceil(Nq, kBr);
+  const FfpaCausalLptPlan lpt_plan = ffpa_causal_lpt_plan(
+      causal, MB, Nb, Nh, Nh_kv, 2LL * Nkv * kHeadDim * sizeof(kDataType));
+  const dim3 grid = lpt_plan.grid;
 
   const int total_q_rows = Nb * Nh * Nq;
   const int total_kv_rows = Nb * Nh_kv * Nkv;
@@ -298,10 +301,10 @@ void launch_cute_fwd_split_d_m4n2_sm120_v(torch::Tensor Q, torch::Tensor K,
           kernel_func, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemBytes);
       kernel_func<<<grid, block, kSmemBytes, stream>>>(
           tma_q, tma_k, tma_v, tma_o, tma_bias_sel, O_ptr, softmax_lse_ptr, Nq,
-          Nkv, Nh, Nh_kv, scale, Tc, causal, total_q_rows, total_kv_rows,
-          attn_bias_ptr, attn_bias_dtype, bias.stride_b, bias.stride_h,
-          bias.stride_m, bias.stride_n, dropout_p_f, philox_seed_u,
-          philox_offset_u, nhd_out,
+          Nkv, Nh, Nh_kv, scale, Tc, lpt_plan.causal_arg, total_q_rows,
+          total_kv_rows, attn_bias_ptr, attn_bias_dtype, bias.stride_b,
+          bias.stride_h, bias.stride_m, bias.stride_n, dropout_p_f,
+          philox_seed_u, philox_offset_u, nhd_out,
           bias_plan.mode != 0 ? bias_plan.m_total : (long long)1);
     };
 

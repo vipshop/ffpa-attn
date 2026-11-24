@@ -121,10 +121,43 @@ using CtaBarrier = cutlass::arch::ClusterBarrier;
 // (SFQ/SFK/SFVt) and the (B,H,Mb,Nkv_pad) delta_s tensor (DS). lse (natural
 // log, with the smooth-K correction) is written when softmax_lse != nullptr;
 // km/qm may be null to skip the correction.
+// Decode linear work_id -> (b, Nh_id, Q_tile_id) for opt-in causal LPT.
+// Dense keeps bh-outer / Q_tile-inner so persistent CTAs stream Q tiles of one
+// (b, h). Causal LPT traverses (h_in_sec, mblock reversed, sec_id, batch).
+__device__ __forceinline__ void decode_fp4_work_id(int work_id, int causal,
+                                                   int Nh, int MB,
+                                                   int lpt_heads_per_sec,
+                                                   int& b, int& Nh_id,
+                                                   int& Q_tile_id) {
+  if (!causal || lpt_heads_per_sec <= 0) {
+    const int bh = work_id / MB;
+    Q_tile_id = work_id % MB;
+    b = bh / Nh;
+    Nh_id = bh % Nh;
+    return;
+  }
+  const int work_per_batch = Nh * MB;
+  b = work_id / work_per_batch;
+  const int rem_b = work_id % work_per_batch;
+  if (lpt_heads_per_sec >= Nh) {
+    Q_tile_id = MB - 1 - rem_b / Nh;
+    Nh_id = rem_b % Nh;
+    return;
+  }
+  const int sec_work = lpt_heads_per_sec * MB;
+  const int sec_id = rem_b / sec_work;
+  const int rem_s = rem_b % sec_work;
+  const int h_start = sec_id * lpt_heads_per_sec;
+  const int h_rem = Nh - h_start;
+  const int h_count = (h_rem < lpt_heads_per_sec) ? h_rem : lpt_heads_per_sec;
+  Q_tile_id = MB - 1 - rem_s / h_count;
+  Nh_id = h_start + rem_s % h_count;
+}
+
 template <typename Traits, typename ElementO, typename TmaQ, typename TmaK,
           typename TmaV, typename TmaO, typename TmaSFQ, typename TmaSFK,
           typename TmaSFVt, typename TmaDS, typename TmaBias, int kBiasMode = 0,
-          int kBias4B = 0, int kHasAttnBias = 0>
+          int kBias4B = 0, int kHasAttnBias = 0, bool kCausalLpt = false>
 __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
     CUTLASS_GRID_CONSTANT TmaQ const tma_q,
     CUTLASS_GRID_CONSTANT TmaK const tma_k,
@@ -142,7 +175,7 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
     const void* __restrict__ attn_bias = nullptr, int attn_bias_dtype = 0,
     long long attn_bias_stride_b = 0, long long attn_bias_stride_h = 0,
     long long attn_bias_stride_m = 0, long long attn_bias_stride_n = 0,
-    long long attn_bias_plane_m_total = 0) {
+    long long attn_bias_plane_m_total = 0, int lpt_heads_per_sec = 0) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   using namespace cute;
   using Element = typename Traits::Element;
@@ -321,14 +354,21 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
       int bias_g = 0;  // global bias-tile count; bias_full/empty never re-init
       for (int work_id = blockIdx.x; work_id < total_work;
            work_id += gridDim.x, ++w) {
-        // work_id -> (b, h, Q_tile): bh-outer / Q-tile-inner, so consecutive
-        // work ids share one (b,h) and stream its Q tiles; a CTA's works are
-        // strided by gridDim.x (grid-stride loop, see header contract).
+        // Default: bh-outer / Q-tile-inner, so consecutive work ids share one
+        // (b,h). Opt-in causal LPT instead uses decode_fp4_work_id's sectioned
+        // order; a CTA's works are strided by gridDim.x (see header contract).
         const int kv_offset = Nkv - Nq;
-        const int bh = work_id / MB;
-        const int Q_tile_id = work_id % MB;
-        const int b = bh / Nh;
-        const int Nh_id = bh % Nh;
+        int b, Nh_id, Q_tile_id;
+        if constexpr (kCausalLpt) {
+          decode_fp4_work_id(work_id, causal, Nh, MB, lpt_heads_per_sec, b,
+                             Nh_id, Q_tile_id);
+        } else {
+          const int bh = work_id / MB;
+          Q_tile_id = work_id % MB;
+          b = bh / Nh;
+          Nh_id = bh % Nh;
+        }
+        const int bh = b * Nh + Nh_id;
         const int kv_head_idx = Nh_id / group_size;
         const int q_tile_abs = Q_tile_id + q_start_row / kBr;
         const int q_bh = bh;
@@ -722,10 +762,17 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
   for (int work_id = blockIdx.x; work_id < total_work;
        work_id += gridDim.x, ++w) {
     const int kv_offset = Nkv - Nq;
-    const int bh = work_id / MB;
-    const int Q_tile_id = work_id % MB;
-    const int Nb_id = bh / Nh;
-    const int Nh_id = bh % Nh;
+    int Nb_id, Nh_id, Q_tile_id;
+    if constexpr (kCausalLpt) {
+      decode_fp4_work_id(work_id, causal, Nh, MB, lpt_heads_per_sec, Nb_id,
+                         Nh_id, Q_tile_id);
+    } else {
+      const int bh = work_id / MB;
+      Q_tile_id = work_id % MB;
+      Nb_id = bh / Nh;
+      Nh_id = bh % Nh;
+    }
+    const int bh = Nb_id * Nh + Nh_id;
     const int kv_head_idx = Nh_id / group_size;
     const int Br_base = Q_tile_id * kBr;
     const int causal_thresh_row0 = q_start_row + Br_base + kv_offset;
