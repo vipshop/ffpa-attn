@@ -472,25 +472,26 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
   const int num_ctas =
       causal ? total_work : std::min(total_work, prop->multiProcessorCount);
   const dim3 grid(num_ctas, 1, 1);
-  // FA-4 §3.4 L2-aware head section width for causal LPT work_id mapping.
-  // Skip LPT when mb <= 8 (1K causal is short enough that extra work_id
-  // divisions outweigh tail hiding) or when sectioning degenerates to 1 head.
-  const long long kv_head_bytes =
-      (long long)Nkv_pad * kHeadDim * (kPvMxfp8 ? 3 : 2) / 2;
-  int lpt_heads_per_sec = 0;
-  if (causal && mb > 8) {
-    const int hps = ffpa_causal_lpt_heads_per_sec(Nh, Nh_kv, kv_head_bytes);
-    if (hps > 1)
-      lpt_heads_per_sec = hps;
-  }
   const auto launch_with = [&](auto bias_tag, auto tma_bias_sel, auto mode_c,
-                               auto b4_c) {
+                               auto b4_c, auto causal_lpt_tag) {
     using TmaBiasSel = decltype(tma_bias_sel);
+    constexpr bool kCausalLpt = decltype(causal_lpt_tag)::value;
     auto kernel = ffpa_fp4::persist_d_ws_fwd_cute_fp4_sm120<
         Traits, ElementO, decltype(tma_q), decltype(tma_k), decltype(tma_v),
         decltype(tma_o), decltype(tma_sfq), decltype(tma_sfk),
         decltype(tma_sfvt), decltype(tma_ds), TmaBiasSel, kBiasPlanMode,
-        kBias4BytesPerElem, kBiasOn>;
+        kBias4BytesPerElem, kBiasOn, kCausalLpt>;
+    int lpt_heads_per_sec = 0;
+    if constexpr (kCausalLpt) {
+      // Per-KV-head K+V working-set bytes used for L2 section sizing.
+      const long long kv_head_bytes =
+          (long long)Nkv_pad * kHeadDim * (kPvMxfp8 ? 3 : 2) / 2;
+      if (causal && mb > 8) {
+        const int hps = ffpa_causal_lpt_heads_per_sec(Nh, Nh_kv, kv_head_bytes);
+        if (hps > 1)
+          lpt_heads_per_sec = hps;
+      }
+    }
     TORCH_CHECK(cudaFuncSetAttribute(
                     kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                     kSmemBytes) == cudaSuccess,
@@ -507,43 +508,52 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
         bias_plan.mode != 0 ? bias_plan.m_total : (long long)1,
         lpt_heads_per_sec);
   };
-  // Compile-time pinned variant: only this tag's kernel table instantiates.
+  // Bias tags select the kernel table; no-bias additionally has default and
+  // opt-in scheduling variants so the default does not pay LPT decode cost.
   if constexpr (kBiasOn == 0) {
-    launch_with(std::integral_constant<int, 0>{}, tma_bias_r16,
-                std::integral_constant<int, 0>{},
-                std::integral_constant<int, 0>{});
+    // Per-launch read supports in-process A/B; only exact "1" enables LPT.
+    const char* lpt_env = getenv("FFPA_FP4_CAUSAL_LPT");
+    const bool lpt_opt_in = lpt_env && lpt_env[0] == '1' && lpt_env[1] == '\0';
+    if (lpt_opt_in)
+      launch_with(std::integral_constant<int, 0>{}, tma_bias_r16,
+                  std::integral_constant<int, 0>{},
+                  std::integral_constant<int, 0>{}, std::true_type{});
+    else
+      launch_with(std::integral_constant<int, 0>{}, tma_bias_r16,
+                  std::integral_constant<int, 0>{},
+                  std::integral_constant<int, 0>{}, std::false_type{});
   } else if constexpr (kBiasPlanMode == 1) {
     if constexpr (kBias4BytesPerElem == 1)
       launch_with(std::integral_constant<int, 1>{}, tma_bias_d32,
                   std::integral_constant<int, 1>{},
-                  std::integral_constant<int, 1>{});
+                  std::integral_constant<int, 1>{}, std::false_type{});
     else
       launch_with(std::integral_constant<int, 1>{}, tma_bias_d16,
                   std::integral_constant<int, 1>{},
-                  std::integral_constant<int, 0>{});
+                  std::integral_constant<int, 0>{}, std::false_type{});
   } else if constexpr (kBiasPlanMode == 2) {
     if constexpr (kBias4BytesPerElem == 1)
       launch_with(std::integral_constant<int, 1>{}, tma_bias_r32,
                   std::integral_constant<int, 2>{},
-                  std::integral_constant<int, 1>{});
+                  std::integral_constant<int, 1>{}, std::false_type{});
     else
       launch_with(std::integral_constant<int, 1>{}, tma_bias_r16,
                   std::integral_constant<int, 2>{},
-                  std::integral_constant<int, 0>{});
+                  std::integral_constant<int, 0>{}, std::false_type{});
   } else if constexpr (kBiasPlanMode == 3) {
     // resident row-vector: no TMA issue in-kernel, descriptor unused.
     if constexpr (kBias4BytesPerElem == 1)
       launch_with(std::integral_constant<int, 1>{}, tma_bias_r32,
                   std::integral_constant<int, 3>{},
-                  std::integral_constant<int, 1>{});
+                  std::integral_constant<int, 1>{}, std::false_type{});
     else
       launch_with(std::integral_constant<int, 1>{}, tma_bias_r16,
                   std::integral_constant<int, 3>{},
-                  std::integral_constant<int, 0>{});
+                  std::integral_constant<int, 0>{}, std::false_type{});
   } else {
     launch_with(std::integral_constant<int, 1>{}, tma_bias_r16,
                 std::integral_constant<int, 0>{},
-                std::integral_constant<int, 0>{});
+                std::integral_constant<int, 0>{}, std::false_type{});
   }
 }
 #endif  // ENABLE_FFPA_CUTE_EXT && ENABLE_FFPA_TMA_EXT
