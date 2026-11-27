@@ -154,6 +154,9 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
   constexpr int kStagesV = Traits::kStagesV;
   constexpr int kProducerThreads = 128;
   constexpr int kConsumerThreads = 256;
+  // K/V empty barriers need one arrival per consumer warp: lane 0 reaches the
+  // release only after that warp's synchronous LDSM/MMA reads have completed.
+  constexpr int kConsumerWarps = kConsumerThreads / 32;
   static_assert(
       kHeadDim % 32 == 0 && kHeadDim >= 32 && kHeadDim <= 224,
       "fp8 persist_d supports D in {32,64,...,224} (multiples of 32)");
@@ -268,11 +271,12 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
     CtaBarrier::init(&q_consumed, kConsumerThreads);
     for (int s = 0; s < kStagesK; ++s) {
       TmaBarrier::init(&k_full[s], 1);
-      CtaBarrier::init(&k_empty[s], kConsumerThreads);
+      CtaBarrier::init(&k_empty[s], kConsumerWarps);
     }
     for (int s = 0; s < kStagesV; ++s) {
-      TmaBarrier::init(&v_full[s], 1);
-      CtaBarrier::init(&v_empty[s], kConsumerThreads);
+      if constexpr (kStagesK != kStagesV)
+        TmaBarrier::init(&v_full[s], 1);
+      CtaBarrier::init(&v_empty[s], kConsumerWarps);
     }
     if constexpr (kHasAttnBias) {
       for (int s = 0; s < kBiasStages; ++s) {
@@ -323,10 +327,18 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
                                 SmemLayoutV{});
           auto gV = local_tile(mV, Shape<Int<kHeadDim>, Int<kBc>>{},
                                make_coord(_0{}, s));
-          TmaBarrier::arrive_and_expect_tx(&v_full[s],
-                                           sizeof(Element) * size(sV));
-          copy(tma_v.with(v_full[s]), v_slice.partition_S(gV),
-               v_slice.partition_D(sV));
+          if constexpr (kStagesK == kStagesV) {
+            TmaBarrier::arrive_and_expect_tx(
+                &k_full[s], sizeof(ElementQK) * kKTileElements +
+                                sizeof(Element) * size(sV));
+            copy(tma_v.with(k_full[s]), v_slice.partition_S(gV),
+                 v_slice.partition_D(sV));
+          } else {
+            TmaBarrier::arrive_and_expect_tx(&v_full[s],
+                                             sizeof(Element) * size(sV));
+            copy(tma_v.with(v_full[s]), v_slice.partition_S(gV),
+                 v_slice.partition_D(sV));
+          }
         }
       }
       for (int s = 0; s < kStagesK - 1; ++s) {
@@ -345,8 +357,9 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
                           SmemLayoutK{});
           auto gK = local_tile(mK, Shape<Int<kBc>, Int<kHeadDim>>{},
                                make_coord(s, _0{}));
-          TmaBarrier::arrive_and_expect_tx(&k_full[s],
-                                           sizeof(ElementQK) * size(sK));
+          if constexpr (kStagesK != kStagesV)
+            TmaBarrier::arrive_and_expect_tx(&k_full[s],
+                                             sizeof(ElementQK) * size(sK));
           copy(tma_k.with(k_full[s]), k_slice.partition_S(gK),
                k_slice.partition_D(sK));
         }
@@ -388,23 +401,8 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
           issue_bias_tma(0);
       }
       for (int tile = 0; tile < Tc_eff; ++tile) {
-        {
-          const int v_tile = tile + kStagesV - 1;
-          if (v_tile < Tc_eff) {
-            const int stage_v = v_tile % kStagesV;
-            const int phase_v = (v_tile / kStagesV) & 1;
-            CtaBarrier::wait(&v_empty[stage_v], phase_v);
-            auto sV =
-                make_tensor(make_smem_ptr(v_base + stage_v * kVTileElements),
-                            SmemLayoutV{});
-            auto gV = local_tile(mV, Shape<Int<kHeadDim>, Int<kBc>>{},
-                                 make_coord(_0{}, v_tile));
-            TmaBarrier::arrive_and_expect_tx(&v_full[stage_v],
-                                             sizeof(Element) * size(sV));
-            copy(tma_v.with(v_full[stage_v]), v_slice.partition_S(gV),
-                 v_slice.partition_D(sV));
-          }
-        }
+        // K becomes empty after QK, one tile earlier than V. Issue it first so
+        // the next K TMA overlaps PV; V still starts as soon as PV drains it.
         {
           const int k_tile = tile + kStagesK - 1;
           if (k_tile < Tc_eff) {
@@ -427,10 +425,38 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
                 SmemLayoutK{});
             auto gK = local_tile(mK, Shape<Int<kBc>, Int<kHeadDim>>{},
                                  make_coord(k_tile, _0{}));
-            TmaBarrier::arrive_and_expect_tx(&k_full[stage_k],
-                                             sizeof(ElementQK) * size(sK));
+            if constexpr (kStagesK == kStagesV) {
+              TmaBarrier::arrive_and_expect_tx(
+                  &k_full[stage_k], sizeof(ElementQK) * size(sK) +
+                                        sizeof(Element) * kVTileElements);
+            } else {
+              TmaBarrier::arrive_and_expect_tx(&k_full[stage_k],
+                                               sizeof(ElementQK) * size(sK));
+            }
             copy(tma_k.with(k_full[stage_k]), k_slice.partition_S(gK),
                  k_slice.partition_D(sK));
+          }
+        }
+        {
+          const int v_tile = tile + kStagesV - 1;
+          if (v_tile < Tc_eff) {
+            const int stage_v = v_tile % kStagesV;
+            const int phase_v = (v_tile / kStagesV) & 1;
+            CtaBarrier::wait(&v_empty[stage_v], phase_v);
+            auto sV =
+                make_tensor(make_smem_ptr(v_base + stage_v * kVTileElements),
+                            SmemLayoutV{});
+            auto gV = local_tile(mV, Shape<Int<kHeadDim>, Int<kBc>>{},
+                                 make_coord(_0{}, v_tile));
+            if constexpr (kStagesK == kStagesV) {
+              copy(tma_v.with(k_full[stage_v]), v_slice.partition_S(gV),
+                   v_slice.partition_D(sV));
+            } else {
+              TmaBarrier::arrive_and_expect_tx(&v_full[stage_v],
+                                               sizeof(Element) * size(sV));
+              copy(tma_v.with(v_full[stage_v]), v_slice.partition_S(gV),
+                   v_slice.partition_D(sV));
+            }
           }
         }
         // bias(t+1) issued last (fp4 persist_d pattern): its empty-wait can
@@ -453,10 +479,12 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
   // its first K/V TMA issues on these arrives; they carry no dependency on Q
   // data, so arriving early lets K(0)/V(0) TMAs overlap the Q TMA in flight
   // instead of serializing behind Q arrival + consumer wakeup.
-  for (int s = 0; s < kStagesK; ++s)
-    CtaBarrier::arrive(&k_empty[s]);
-  for (int s = 0; s < kStagesV; ++s)
-    CtaBarrier::arrive(&v_empty[s]);
+  if ((wg_tid & 31) == 0) {
+    for (int s = 0; s < kStagesK; ++s)
+      CtaBarrier::arrive(&k_empty[s]);
+    for (int s = 0; s < kStagesV; ++s)
+      CtaBarrier::arrive(&v_empty[s]);
+  }
   if constexpr (kHasAttnBias) {
     for (int s = 0; s < kBiasStages; ++s)
       CtaBarrier::arrive(&bias_empty[s]);
@@ -621,8 +649,12 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
     // ks is uniform across thread's K cols (SM80_16x8: lane%4). qs_arr[row]
     // varies per Q row in per-thread mode. Dequant is applied per-row below.
 
-    // QK GEMM: fp8xfp8->fp32, or int8xint8->s32 when kQKInt8.
+    // QK GEMM: fp8xfp8->fp32, or int8xint8->s32 when kQKInt8. V is already
+    // prefetched by the two-stage pipeline; settle it with K so one proxy
+    // fence covers both operands instead of fencing again after softmax.
     TmaBarrier::wait(&k_full[k_stg], k_phase);
+    if constexpr (kStagesK != kStagesV)
+      TmaBarrier::wait(&v_full[v_stg], v_phase);
     cutlass::arch::fence_view_async_shared();
 
     auto sK = make_tensor(
@@ -639,7 +671,8 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
       ffpa_cute::gemm_ss(tCrS, tCrQ, tCrK, tQsQ_s2r, tKsK_s2r, tiled_mma_qk,
                          s2r_copy_q, s2r_copy_k, s2r_thr_q, s2r_thr_k);
     }
-    CtaBarrier::arrive(&k_empty[k_stg]);
+    if ((wg_tid & 31) == 0)
+      CtaBarrier::arrive(&k_empty[k_stg]);
 
     // int8 QK: cast the s32 acc to f32 in place over the same 4B regs (no
     // extra registers); identity view on the fp8 path.
@@ -873,9 +906,6 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
 
     // PV GEMM: A = P in regs, B = V^T from smem. Per-row dequant factor
     // varies per row -> separate o_tile; fixed mode accumulates into o_acc.
-    TmaBarrier::wait(&v_full[v_stg], v_phase);
-    cutlass::arch::fence_view_async_shared();
-
     auto sV = make_tensor(make_smem_ptr(v_base + v_stg * kVTileElements),
                           SmemLayoutV{});
     auto tCrV = thr_mma_pv.partition_fragment_B(sV);
@@ -939,7 +969,8 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp8_sm120(
                            s2r_thr_v);
       }
     }
-    CtaBarrier::arrive(&v_empty[v_stg]);
+    if ((wg_tid & 31) == 0)
+      CtaBarrier::arrive(&v_empty[v_stg]);
   }
 
   // Epilogue: O = O / row_sum (per-row mode already dequantized per tile) or

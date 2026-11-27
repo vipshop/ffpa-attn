@@ -17,7 +17,7 @@ namespace ffpa_fp8 {
 // symmetrically). Mirrors kv_col_sum_kernel (smooth_k.cuh) for coalesced I/O.
 constexpr int kVStatsRowsPerChunk = 512;
 
-template <typename Element, int kD>
+template <typename Element, int kD, bool kSmoothV>
 __global__ void v_col_stats_kernel(const Element* __restrict__ v,
                                    float* __restrict__ partials_sum,
                                    float* __restrict__ partials_max,
@@ -35,12 +35,16 @@ __global__ void v_col_stats_kernel(const Element* __restrict__ v,
   const Element* v_bh = v + fp8_plane_base(L, bh);
   const int col0 = (threadIdx.x % kColsPerRow) * kVec;
 
-  float sum_acc[kVec], max_acc[kVec], min_acc[kVec];
+  float sum_acc[kSmoothV ? kVec : 1];
+  float max_acc[kVec];
+  float min_acc[kSmoothV ? kVec : 1];
 #pragma unroll
   for (int i = 0; i < kVec; ++i) {
-    sum_acc[i] = 0.0f;
-    max_acc[i] = -INFINITY;
-    min_acc[i] = INFINITY;
+    if constexpr (kSmoothV) {
+      sum_acc[i] = 0.0f;
+      min_acc[i] = INFINITY;
+    }
+    max_acc[i] = kSmoothV ? -INFINITY : 0.0f;
   }
   // Pad cols (col0 >= D_og) have no V data; D_og%8==0 keeps each kVec
   // entirely inside or outside the real dims, so the guard is exact.
@@ -53,58 +57,71 @@ __global__ void v_col_stats_kernel(const Element* __restrict__ v,
 #pragma unroll
       for (int i = 0; i < kVec; ++i) {
         const float x = static_cast<float>(vals[i]);
-        sum_acc[i] += x;
-        max_acc[i] = fmaxf(max_acc[i], x);
-        min_acc[i] = fminf(min_acc[i], x);
+        if constexpr (kSmoothV) {
+          sum_acc[i] += x;
+          max_acc[i] = fmaxf(max_acc[i], x);
+          min_acc[i] = fminf(min_acc[i], x);
+        } else {
+          max_acc[i] = fmaxf(max_acc[i], fabsf(x));
+        }
       }
     }
   } else {
-    // No data: collapse max/min to 0 so partials stay well-defined (the
-    // finalize kernel skips pad cols anyway).
 #pragma unroll
     for (int i = 0; i < kVec; ++i) {
       max_acc[i] = 0.0f;
-      min_acc[i] = 0.0f;
+      if constexpr (kSmoothV)
+        min_acc[i] = 0.0f;
     }
   }
 
-  // Block reduce: kRowsPerIter partial rows -> one per column (3 stats).
-  __shared__ float red_sum[kRowsPerIter][kD];
+  // Without V smoothing only max(abs(V)) is observable by the consumer.
+  __shared__ float red_sum[kSmoothV ? kRowsPerIter : 1][kSmoothV ? kD : 1];
   __shared__ float red_max[kRowsPerIter][kD];
-  __shared__ float red_min[kRowsPerIter][kD];
+  __shared__ float red_min[kSmoothV ? kRowsPerIter : 1][kSmoothV ? kD : 1];
   if constexpr (kThreads % kColsPerRow != 0) {
     for (int i = threadIdx.x; i < kRowsPerIter * kD; i += kThreads) {
-      reinterpret_cast<float*>(red_sum)[i] = 0.0f;
-      reinterpret_cast<float*>(red_max)[i] = -INFINITY;
-      reinterpret_cast<float*>(red_min)[i] = INFINITY;
+      if constexpr (kSmoothV) {
+        reinterpret_cast<float*>(red_sum)[i] = 0.0f;
+        reinterpret_cast<float*>(red_min)[i] = INFINITY;
+      }
+      reinterpret_cast<float*>(red_max)[i] = kSmoothV ? -INFINITY : 0.0f;
     }
     __syncthreads();
   }
   const int row_grp = threadIdx.x / kColsPerRow;
 #pragma unroll
   for (int i = 0; i < kVec; ++i) {
-    red_sum[row_grp][col0 + i] = sum_acc[i];
+    if constexpr (kSmoothV) {
+      red_sum[row_grp][col0 + i] = sum_acc[i];
+      red_min[row_grp][col0 + i] = min_acc[i];
+    }
     red_max[row_grp][col0 + i] = max_acc[i];
-    red_min[row_grp][col0 + i] = min_acc[i];
   }
   __syncthreads();
-  float* out_sum =
-      partials_sum + (static_cast<long>(bh) * gridDim.x + chunk) * kD;
   float* out_max =
       partials_max + (static_cast<long>(bh) * gridDim.x + chunk) * kD;
-  float* out_min =
-      partials_min + (static_cast<long>(bh) * gridDim.x + chunk) * kD;
+  float* out_sum = nullptr;
+  float* out_min = nullptr;
+  if constexpr (kSmoothV) {
+    out_sum = partials_sum + (static_cast<long>(bh) * gridDim.x + chunk) * kD;
+    out_min = partials_min + (static_cast<long>(bh) * gridDim.x + chunk) * kD;
+  }
   for (int d = threadIdx.x; d < kD; d += kThreads) {
-    float s = 0.0f, mx = -INFINITY, mn = INFINITY;
+    float s = 0.0f, mx = kSmoothV ? -INFINITY : 0.0f, mn = INFINITY;
 #pragma unroll
     for (int g = 0; g < kRowsPerIter; ++g) {
-      s += red_sum[g][d];
+      if constexpr (kSmoothV) {
+        s += red_sum[g][d];
+        mn = fminf(mn, red_min[g][d]);
+      }
       mx = fmaxf(mx, red_max[g][d]);
-      mn = fminf(mn, red_min[g][d]);
     }
-    out_sum[d] = s;
+    if constexpr (kSmoothV) {
+      out_sum[d] = s;
+      out_min[d] = mn;
+    }
     out_max[d] = mx;
-    out_min[d] = mn;
   }
 }
 
@@ -123,22 +140,25 @@ __global__ void v_stats_finalize_kernel(const float* __restrict__ partials_sum,
     // Pad cols: no data, VT is zero-filled. v_scale=1 (identity) avoids
     // 0/0 in the quantize divide; vm=0 keeps the epilogue dequant (O += mean)
     // at 0. Deliberately NOT scaled by v_scale_max (decoupled on purpose).
-    vm[static_cast<long>(bh) * kD + d] = 0.0f;
+    if constexpr (kSmoothV)
+      vm[static_cast<long>(bh) * kD + d] = 0.0f;
     v_scale[static_cast<long>(bh) * kD + d] = 1.0f;
     return;
   }
   const float inv_n = 1.0f / static_cast<float>(Nkv);
-  float s = 0.0f, mx = -INFINITY, mn = INFINITY;
+  float s = 0.0f, mx = kSmoothV ? -INFINITY : 0.0f, mn = INFINITY;
   for (int c = 0; c < chunks; ++c) {
     const long base = (static_cast<long>(bh) * chunks + c) * kD + d;
-    s += partials_sum[base];
+    if constexpr (kSmoothV) {
+      s += partials_sum[base];
+      mn = fminf(mn, partials_min[base]);
+    }
     mx = fmaxf(mx, partials_max[base]);
-    mn = fminf(mn, partials_min[base]);
   }
-  const float mean = s * inv_n;
-  const float amax = kSmoothV ? fmaxf(fabsf(mx - mean), fabsf(mn - mean))
-                              : fmaxf(fabsf(mx), fabsf(mn));
-  vm[static_cast<long>(bh) * kD + d] = mean;
+  const float mean = kSmoothV ? s * inv_n : 0.0f;
+  const float amax = kSmoothV ? fmaxf(fabsf(mx - mean), fabsf(mn - mean)) : mx;
+  if constexpr (kSmoothV)
+    vm[static_cast<long>(bh) * kD + d] = mean;
   v_scale[static_cast<long>(bh) * kD + d] = fmaxf(amax, 1e-8f) / v_scale_max;
 }
 
@@ -148,7 +168,7 @@ __global__ void v_stats_finalize_kernel(const float* __restrict__ partials_sum,
 // (V8 = (V-mean)/v_scale in [-v_scale_max, v_scale_max]); 448 keeps e4m3
 // full range, smaller (e.g. 2.25) compresses V8 for fp16 PV acc precision.
 // partials_sum/max/min are fp32 scratch (Nb*Nh_kv, chunks, D) with chunks =
-// ceil(Nkv / 512), allocated by caller.
+// ceil(Nkv / 512). Only max is allocated and accessed when kSmoothV=false.
 template <typename Element, int kHeadDim, bool kSmoothV>
 void launch_v_stats_sm120(const Element* v_ptr, float* vm, float* v_scale,
                           float* partials_sum, float* partials_max,
@@ -164,7 +184,7 @@ void launch_v_stats_sm120(const Element* v_ptr, float* vm, float* v_scale,
   const int bh = Nb * Nh_kv;
   const int chunks = (Nkv + kVStatsRowsPerChunk - 1) / kVStatsRowsPerChunk;
   dim3 grid(chunks, bh);
-  v_col_stats_kernel<Element, kHeadDim><<<grid, 256, 0, stream>>>(
+  v_col_stats_kernel<Element, kHeadDim, kSmoothV><<<grid, 256, 0, stream>>>(
       v_ptr, partials_sum, partials_max, partials_min, Nkv, kVStatsRowsPerChunk,
       D_og, *L);
   v_stats_finalize_kernel<kHeadDim, kSmoothV><<<bh, kHeadDim, 0, stream>>>(

@@ -358,7 +358,7 @@ D 交叉点与 fp16 家族一致（<768 M8N1 / ≥768 M4N2）。`FFPA_FP8_FORCE_
 1. `launch_kv_mean_sm120`（smooth_k，默认开）：K 的 per-(b,h) 序列均值，两阶段自定义 kernel（~50µs @ B1H32N8192D128，替代 `at::mean`+cast 的 ~85µs）；输出 in-dtype 均值 + fp32 副本。
 2. Q/K 量化（二选一）：
    - `launch_quantize_fp8_sm120`（per_block，q/k 各 1 scale/row-block）
-   - `launch_quantize_fp8_perthread_qk_sm120`（per_thread：Q 64 scale/128-row block、K 4/kBc-col block，fragment 对齐；2 线程/行优化后 ~49µs @N=4608）
+   - `launch_quantize_fp8_perthread_qk_sm120`（per_thread：Q 64 scale/128-row block、K 4/kBc-col block，fragment 对齐；PC-20 起 Q 为 4 线程/行、32-row launch block，降低 live registers 且 scale/quantized bytes 逐位不变）
    - 输出 e4m3（`fp8_qk_mm_type='fp8'`）或对称 int8（`'int8'`，s8xs8→s32 QK MMA）
 3. V 量化转置：
    - per_block：`vt8 [B,H,D,Nkv_pad]`（TMA 16B 对齐 pad）
@@ -422,13 +422,14 @@ D 交叉点与 fp16 家族一致（<768 M8N1 / ≥768 M4N2）。`FFPA_FP8_FORCE_
 - **log2 域 softmax 折叠反量化**：`s_dequant = qs*ks` 折进 exp2 shift；P 固定 scale 1/448（`exp_offset = log2(vs*448)`）使 PV MMA 域消去 vs：`(P*vs*448)@(V/vs) = 448*(P@V)`，epilogue 用 `(1/448)/row_sum` 反量化（`fp8_pscale.cuh`）。
 - **V 预转置**（D×N）供 PV MMA 直接消费；TMA 行 16B 对齐 pad。
 - **reorg-free PV pack**：MMA 归约轴置换不变性（Σ_k P[m,k]V[k,n] 对任意双射 π 不变）→ P 打包零 SHFL（4 条 lane 无关 PRMT），quantize 按 π⁻¹ 置换写 V^T 列（同 32B sector 内），配对由单一 `reorg_free` 常量保证不发散。
-- **优化已落地**（D=128 int8+f16acc，见 memory `ffpa-fp8-d128-ws-opt`）：rescale+absorb FFMA 融合（fmaf 折进 inst_buf）、max-pass 延迟 scale（tile-max 用未 scale scores 归约后乘 scale）、per-row rescale gating、Q quant 2 线程/行。
+- **优化已落地**（D=128 int8+f16acc，见 memory `ffpa-fp8-d128-ws-opt`）：rescale+absorb FFMA 融合（fmaf 折进 inst_buf）、max-pass 延迟 scale（tile-max 用未 scale scores 归约后乘 scale）、per-row rescale gating、Q quant 4 线程/行（PC-20）。
 - **WS 结构**：1 producer WG(128T, TMA) + 1 consumer(256T, 全计算)；`setmaxnreg` 32/232（producer dealloc/consumer alloc，224-232 区间平坦）；`__launch_bounds__(384,1)`。
 - **smem/L1 权衡**：GB202 smem 与 L1 共池，每 +16KB smem ≈ +4-5µs kernel；方向是少占 smem 多留 L1。Q s2r 常驻 + K stage0 复用 Q 区 + 槽轮转（复用区给最晚首次使用的 stage，消除 q_consumed 串行链）。
+- **PC-20（2026-11-27）**：K2V2 时同 stage K/V 共用一个 full barrier，单次 `expect_tx(K_bytes+V_bytes)`；consumer 在 QK 前同时 settle K/V、共享一次 proxy fence，producer 稳态 K-first；K/V empty barrier 改为每 consumer warp 由 lane 0 arrive（8 次而非 256 次，每 warp 仍独立完成后才释放）。辅助链同步优化为 Q 4 线程/行、非 smooth-V stats 仅归约 abs-max、V quant 8×Vec8 batching，并删除未用 workspace。PRO 5000 上 self8192 NCU 热缓存时长 `2.852512→2.769920ms`（-2.90%），regs=168、smem=68.096KiB、spill=0 不变；官方 14 场景逐轮 13 项领先，16K GQA 三轮 `1.0011/0.9998/1.0001x` 为持平。详见 RFC PC-20。
 
 ### 5.8 已证伪的优化（勿重复）
 
-sm120 fp8 persist-D 的结构优化路线**已全部实测证伪**（memory 记录）：
+sm120 fp8 persist-D 的下列既有结构优化路线均已实测证伪；PC-20 说明 barrier 协议与量化 IO 仍有独立收益，不能把本表外推成所有微优化均无效：
 
 | 实验 | 结果 |
 |---|---|
@@ -442,11 +443,14 @@ sm120 fp8 persist-D 的结构优化路线**已全部实测证伪**（memory 记�
 | CUDA-core row_sum 替代 tensor rowsum MMA | -4%（rowsum MMA 在 tensor 气泡里免费） |
 | O2 预计算 log2/RCP、O3 bank conflict | 否决（MUFU 被 MMA 等待掩盖；ld conflict 0.39%） |
 | aux vstats 扩容 | 带宽受限，零收益 |
+| PC-20：双 tile 合并 wait/fence | +17.35% 耗时，破坏流水重叠，撤回 |
+| PC-20：K stage 分区外提 / LDSM 地址缓存 / barrier 地址手写 PTX | 分别 +1.07%/+10.76%/+7.37% 耗时，全部撤回 |
+| PC-20：V quant load batch4 / batch2 | 分别 +1.27%/+2.12% 耗时；保留实测最优的 batch8，其余撤回 |
 | **aux 链融合（PC-1/PC-2 Mega Quantize Kernel）** | **证伪关闭（2026-09-11）**：aux 各项贴设备峰值带宽（1.04TB/s），融合只省 launch 不减流量；大 N wall 差 <0.2%；L2 排序仅 N≤~9000@D128 有效；4-launch 融合 bitwise 验证后回退（详见 RFC 完成清单 PC-1） |
 | **fp4 persist-D V/SFV 首块 s2r 提前（PC-4）** | **证伪关闭（2026-09-11）**：NCU 全量画像（N16384 D128）证实 wait 31% 主体在 OMMA 等 **A 操作数链**（softmax→pack→PV 串行 + tile 级 S 复用），B 供给非瓶颈（LDS 类 wait 仅 7.7%）；V 首块 LDSM 提前藏进 softmax 的假设严格 A/B **+1.3~1.7% 净负**（寄存器 live-range 拉长，同 fp4 rescale in-place 机制）已回退；tensor pipe 54% 缺口被 occupancy 25%（smem 99KB 硬限制）+ 数值链依赖锁死，**fp4 persist-D 微优化到顶确认**（详见 RFC 完成清单 PC-4 / 附录 A #21） |
 | **fp4 split-D (M8N1) kernel 内部（PC-9）** | **证伪关闭（2026-09-11，零改动）**：立项预设的两项 persist-D 方案**均已内化**（`online_softmax_with_quant` FirstTile 融合共享 / split-D 本就是 persistent kernel，grid=110=SM 数）；stages 3/3→4/4 实测 ±0.5% 抵消（D512 微益/D320 微损 + 挤 O epilogue batching）；kVDChunk 64→128 smem 物理不可行（+12.75KB 超预算 static_assert 拦截——现状 3/3 已用 ~90KB/99KB）；kQKDChunk 锁 64（blockscale atom K）；D=512 spill 234MB = o_acc D/2 结构性（同 PC-7，流量仅 12.8GB/s、代价在 2 warps/scheduler 延迟暴露）；D=320 已健康（319T，wait 依赖链主导同 PC-4 模板）。**fp4 split-D 微优化到顶确认**（详见 RFC 完成清单 PC-9） |
 
-**结论：attn kernel 本身已稳定略优于 SageAttention（kernel 级 +1.1~2.3%），kernel 微优化到顶（fp8/fp4 persist-D 双双确认）。**
+**结论边界：上述结构重构与数值链方向维持证伪，fp4 persist-D 的 PC-4 结论不变；fp8 persist-D 经 PC-20 在默认官方 14 场景对 Sage2 达到逐轮领先或噪声内持平。后续实验仍须由新 NCU 证据驱动，不得复活表中已撤回的方案。**
 
 ### 5.9 E2E 差距根因与方向
 
@@ -619,7 +623,7 @@ softmax_scale 恒按真实 D（Python 解析 `1/sqrt(D_og)`）。
 
 ### 9.1 kernel 级（区分"已证伪"与"待做"）
 
-**已证伪、不要再投**（详见 §5.8/§6.6）：WS 双 consumer、persistent work loop（fp8）、stages 加深/不对称（K3V2/K2V1）、cluster 化、v2/v3/v5 结构变体、MUFU 预计算、bank conflict、CUDA-core row_sum、fp4 Q-smem 复用、rescale in-place、**aux 链融合（PC-1/PC-2，2026-09-11：aux 为纯 DRAM 流式负载，各项贴 1.04TB/s 峰值带宽，融合只省 launch 不减流量——大 N wall 差 <0.2%，L2 排序作用域 ≤L2 100.7MB 即 N≤~9000@D128，见 RFC 完成清单）**、**fp4 persist-D kernel 内部微优化（PC-4，2026-09-11：wait 31% = 低 occupancy + softmax→pack→PV 串行链结构性代价，tensor pipe 54% 缺口无可攻克热点；候选改动 +1.3~1.7% 净负已回退）**。fp8/fp4 attn kernel 微调已到顶（kernel 级已稳定略优于 SageAttention）。
+**已证伪、不要再投**（详见 §5.8/§6.6）：WS 双 consumer、persistent work loop（fp8）、stages 加深/不对称（K3V2/K2V1）、cluster 化、v2/v3/v5 结构变体、MUFU 预计算、bank conflict、CUDA-core row_sum、fp4 Q-smem 复用、rescale in-place、**aux 链融合（PC-1/PC-2，2026-09-11：aux 为纯 DRAM 流式负载，各项贴 1.04TB/s 峰值带宽，融合只省 launch 不减流量——大 N wall 差 <0.2%，L2 排序作用域 ≤L2 100.7MB 即 N≤~9000@D128，见 RFC 完成清单）**、**fp4 persist-D kernel 内部微优化（PC-4，2026-09-11：wait 31% = 低 occupancy + softmax→pack→PV 串行链结构性代价，tensor pipe 54% 缺口无可攻克热点；候选改动 +1.3~1.7% 净负已回退）**。上述结论只覆盖列出的结构/数值链方向；fp8 persist-D 的 barrier 与量化 IO 例外已由 PC-20 实测落地，fp4 persist-D 的 PC-4 边界不变。
 
 **待做 / 有明确预期收益**：
 

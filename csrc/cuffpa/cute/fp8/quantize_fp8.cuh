@@ -585,20 +585,7 @@ __global__ void quantize_fp8_vt_perchannel_kernel(
   const float* scale_bh = scale + static_cast<long>(bh) * D;
   const float* vm_bh = vm ? (vm + static_cast<long>(bh) * D) : nullptr;
   using VecIn = Vec8<Element>;
-
-  VecIn regs[n_chunks_per_thread];
-#pragma unroll
-  for (int j = 0; j < n_chunks_per_thread; ++j) {
-    const int i = tid + j * kThreads;
-    const int r = i / dv;
-    const int c = i % dv;
-    VecIn v = Vec8<Element>::zero();
-    // D_og%8==0 keeps each kVec entirely inside/outside the real dims.
-    if (row0 + r < N && c * kVec < D_og)
-      v = reinterpret_cast<const VecIn*>(v_bh + static_cast<long>(row0 + r) *
-                                                    L.s_row)[c];
-    regs[j] = v;
-  }
+  constexpr int kLoadBatch = 8;
 
   const long vt_base = static_cast<long>(bh) * D * ldy;
   // kVTPerm: true kv row n lands in storage column VTPermInv32(n).
@@ -609,30 +596,50 @@ __global__ void quantize_fp8_vt_perchannel_kernel(
     const int dc_vec = dc / kVec;
     const int d_vec_end = d_end / kVec;
 #pragma unroll 1
-    for (int j = 0; j < n_chunks_per_thread; ++j) {
-      const int i_local = tid + j * kThreads;
-      const int r = i_local / dv;
-      const int c_vec = i_local % dv;
-      if (c_vec < dc_vec || c_vec >= d_vec_end)
-        continue;
-      const int c_local = c_vec - dc_vec;
-      const VecIn v = regs[j];
-      uint32_t pack[2];
+    for (int j0 = 0; j0 < n_chunks_per_thread; j0 += kLoadBatch) {
+      VecIn v[kLoadBatch];
 #pragma unroll
-      for (int h = 0; h < 2; ++h) {
-        __nv_fp8_e4m3* ob = reinterpret_cast<__nv_fp8_e4m3*>(&pack[h]);
-#pragma unroll
-        for (int e = 0; e < 4; ++e) {
-          const int d = dc + c_local * kVec + h * 4 + e;
-          float x = static_cast<float>(v.elem[h * 4 + e]);
-          if (vm_bh)
-            x -= vm_bh[d];
-          ob[e] = __nv_fp8_e4m3(x / scale_bh[d]);
-        }
+      for (int b = 0; b < kLoadBatch; ++b) {
+        const int j = j0 + b;
+        v[b] = VecIn::zero();
+        if (j >= n_chunks_per_thread)
+          continue;
+        const int i_local = tid + j * kThreads;
+        const int r = i_local / dv;
+        const int c_vec = i_local % dv;
+        if (c_vec >= dc_vec && c_vec < d_vec_end && row0 + r < N &&
+            c_vec * kVec < D_og)
+          v[b] = reinterpret_cast<const VecIn*>(
+              v_bh + static_cast<long>(row0 + r) * L.s_row)[c_vec];
       }
-      uint32_t* dst = reinterpret_cast<uint32_t*>(&tile[r][c_local * kVec]);
-      dst[0] = pack[0];
-      dst[1] = pack[1];
+#pragma unroll
+      for (int b = 0; b < kLoadBatch; ++b) {
+        const int j = j0 + b;
+        if (j >= n_chunks_per_thread)
+          continue;
+        const int i_local = tid + j * kThreads;
+        const int r = i_local / dv;
+        const int c_vec = i_local % dv;
+        if (c_vec < dc_vec || c_vec >= d_vec_end)
+          continue;
+        const int c_local = c_vec - dc_vec;
+        uint32_t pack[2];
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+          __nv_fp8_e4m3* ob = reinterpret_cast<__nv_fp8_e4m3*>(&pack[h]);
+#pragma unroll
+          for (int e = 0; e < 4; ++e) {
+            const int d = dc + c_local * kVec + h * 4 + e;
+            float x = static_cast<float>(v[b].elem[h * 4 + e]);
+            if (vm_bh)
+              x -= vm_bh[d];
+            ob[e] = __nv_fp8_e4m3(x / scale_bh[d]);
+          }
+        }
+        uint32_t* dst = reinterpret_cast<uint32_t*>(&tile[r][c_local * kVec]);
+        dst[0] = pack[0];
+        dst[1] = pack[1];
+      }
     }
     __syncthreads();
 
@@ -693,15 +700,14 @@ void launch_quantize_fp8_vt_perchannel_sm120(
 }
 
 // Per-thread Q quantize (fragment-aligned, NOT per-token): 64 scales per
-// 128-row block. Each group covers a C-fragment row pair {r, r+8} (2 rows),
-// paired via shfl_xor(amax, 8). Per-token would use 128 scales (1 row/scale);
-// per-block uses 1. This middle ground gives zero-shuffle dequant (each
-// thread's C-frag rows share one scale) at the cost of multi-row amax sharing.
-// kQKInt8: int8 output (amax/127); else e4m3 (amax/448).
-// 2 threads per row (half a row each): doubles the grid so DRAM latency on
-// cold inputs is hidden by more in-flight warps. amax combines the row
-// halves (shfl_xor 1) then the {r, r+8} pair (shfl_xor 16); the group amax
-// and every quantized byte stay bitwise identical to the 1-thread/row form.
+// 128-row block. Each group covers a C-fragment row pair {r, r+8} (2 rows).
+// Per-token would use 128 scales (1 row/scale); per-block uses 1. This middle
+// ground gives zero-shuffle dequant (each thread's C-frag rows share one
+// scale) at the cost of multi-row amax sharing. kQKInt8 selects int8 output
+// (amax/127); otherwise e4m3 (amax/448).
+// 4 threads per row reduce live input registers. Four {r, r+8} pairs are
+// packed into each warp, so xor 1/2 combines row quarters and xor 4 combines
+// the row pair. The group amax and quantized bytes stay bitwise identical.
 template <typename Element, int kD, bool kQKInt8>
 __global__ void quantize_fp8_perthread_q_kernel(
     const Element* __restrict__ X,    // (B, H, N, D_og) or NHD layout L
@@ -711,25 +717,29 @@ __global__ void quantize_fp8_perthread_q_kernel(
   constexpr int kVec = 8;
   constexpr int D = kD;
   constexpr int dv = D / kVec;
-  constexpr int kHalf = dv / 2;  // Vec8 chunks per row half
-  const int rb = blockIdx.x;     // 64-row block
+  constexpr int kChunks = dv / 4;  // Vec8 chunks per row quarter
+  const int rb = blockIdx.x;       // 32-row block
   const int bh = blockIdx.y;
   const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int warp = tid >> 5;
+  const int pair = warp * 4 + (lane >> 3);
+  const int row_in_block = pair + ((pair & 8) ? 8 : 0) + ((lane & 4) ? 8 : 0);
+  const int quarter = lane & 3;
   // long row: the write side (y_bh + row * D) is an int32 product that
   // wraps past 2^31 elements within one (b,h) plane (N*D >= 2^31, e.g.
   // 2.1M tokens at D=1024); every sibling quantize kernel already uses
   // long row. The read side (row * L.s_row) promotes via s_row's long.
-  const long row = rb * 64 + (tid >> 1);
-  const int half = tid & 1;
+  const long row = rb * 32 + row_in_block;
   const Element* x_bh = X + fp8_plane_base(L, bh);
   QKOutT<kQKInt8>* y_bh = Y + static_cast<long>(bh) * N * D;
 
   float amax = 0.0f;
-  Vec8<Element> regs[kHalf];
+  Vec8<Element> regs[kChunks];
   if (row < N) {
 #pragma unroll
-    for (int c = 0; c < kHalf; ++c) {
-      const int cc = half * kHalf + c;
+    for (int c = 0; c < kChunks; ++c) {
+      const int cc = quarter * kChunks + c;
       regs[c] = Vec8<Element>::zero();
       if (cc * kVec < D_og)
         regs[c] =
@@ -739,23 +749,22 @@ __global__ void quantize_fp8_perthread_q_kernel(
         amax = fmaxf(amax, fabsf(static_cast<float>(regs[c].elem[e])));
     }
   }
-  // Same row other half, then the pair row {r, r+8} (tid>>1 differs by 8).
   amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, 1));
-  amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, 16));
+  amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, 2));
+  amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, 4));
   const float s = kQKInt8 ? amax / 127.0f : amax / 448.0f;
   const float inv_s = (s == 0.0f) ? 0.0f : 1.0f / s;
   const int n_rb = (N + 127) / 128;
-  // Segment row = row within the 128-row scale segment: rows [0,64) come
-  // from even rb, [64,128) from odd rb (each launch block covers 64 rows).
-  const int seg_row = (rb & 1) * 64 + (tid >> 1);
+  // Four 32-row launch blocks form one 128-row scale segment.
+  const int seg_row = (rb & 3) * 32 + row_in_block;
   const int g = (seg_row / 16) * 8 + seg_row % 8;
-  if ((tid & 1) == 0 && ((seg_row & 8) == 0))
-    scale[static_cast<long>(bh) * (n_rb * 64) + (rb >> 1) * 64 + g] = s;
+  if ((lane & 7) == 0)
+    scale[static_cast<long>(bh) * (n_rb * 64) + (rb >> 2) * 64 + g] = s;
 
   if (row < N) {
 #pragma unroll
-    for (int c = 0; c < kHalf; ++c) {
-      const int cc = half * kHalf + c;
+    for (int c = 0; c < kChunks; ++c) {
+      const int cc = quarter * kChunks + c;
       uint2 out;
       QKOutT<kQKInt8>* ob = reinterpret_cast<QKOutT<kQKInt8>*>(&out);
 #pragma unroll
@@ -909,10 +918,10 @@ void launch_quantize_fp8_perthread_qk_sm120(
   using QKOut = QKOutT<kQKInt8>;
   // V may carry its own (strided-NHD) layout; default mirrors K's.
   const Fp8InputLayout Lv_ = Lv ? *Lv : Lkv;
-  // Q: 128-row scale blocks, 64 scale per block; 2 threads/row (64-row
-  // launch blocks) for DRAM latency hiding.
+  // Q: 128-row scale blocks, 64 scale per block; 4 threads/row (32-row
+  // launch blocks) for lower register pressure and higher occupancy.
   {
-    dim3 grid((Nq + 63) / 64, B * Nh);
+    dim3 grid((Nq + 31) / 32, B * Nh);
     auto qk = quantize_fp8_perthread_q_kernel<Element, kHeadDim, kQKInt8>;
     qk<<<grid, 128, 0, stream>>>(q_ptr, reinterpret_cast<QKOut*>(q8), q_scale,
                                  Nq, Nh, D_og, Lq);
