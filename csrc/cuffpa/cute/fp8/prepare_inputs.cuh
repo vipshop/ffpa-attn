@@ -104,21 +104,27 @@ Fp8QuantizedInputs prepare_fp8_inputs(
   }
 
   // Per-channel V (sage-style): re-quantize V with per-D scale via coalesced
-  // stats (sum+max+min -> mean+amax) + quantize/transpose. smooth_v subtracts
-  // the per-D mean (residual amax); overwrites the per-block vt8/v_scale.
+  // stats + quantize/transpose. smooth_v uses sum/max/min for the residual
+  // amax; otherwise only max(abs(V)) is needed. Overwrites per-block vt8/scale.
   torch::Tensor vm, v_partials_sum, v_partials_max, v_partials_min;
   float* vm_ptr = nullptr;
   if (v_per_channel) {
     const int stats_chunks =
         (Nkv + kVStatsRowsPerChunk - 1) / kVStatsRowsPerChunk;
-    v_partials_sum =
-        torch::empty({Nb * Nh_kv, stats_chunks, kHeadDim}, opts_f32);
+    if (v_smooth_mean) {
+      v_partials_sum =
+          torch::empty({Nb * Nh_kv, stats_chunks, kHeadDim}, opts_f32);
+      v_partials_min =
+          torch::empty({Nb * Nh_kv, stats_chunks, kHeadDim}, opts_f32);
+      vm = torch::empty({Nb * Nh_kv, kHeadDim}, opts_f32);
+      vm_ptr = vm.data_ptr<float>();
+    } else {
+      v_partials_sum = torch::empty({0}, opts_f32);
+      v_partials_min = torch::empty({0}, opts_f32);
+      vm = torch::empty({0}, opts_f32);
+    }
     v_partials_max =
         torch::empty({Nb * Nh_kv, stats_chunks, kHeadDim}, opts_f32);
-    v_partials_min =
-        torch::empty({Nb * Nh_kv, stats_chunks, kHeadDim}, opts_f32);
-    vm = torch::empty({Nb * Nh_kv, kHeadDim}, opts_f32);
-    vm_ptr = vm.data_ptr<float>();
     if (v_smooth_mean) {
       launch_quantize_fp8_vt_perchannel_sm120<kDataType, kBr, kBc, kHeadDim,
                                               true>(
