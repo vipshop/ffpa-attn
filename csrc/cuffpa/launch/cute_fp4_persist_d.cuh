@@ -259,7 +259,7 @@ void launch_cute_fwd_persist_d_fp4_sm120_v(torch::Tensor Q, torch::Tensor K,
       reinterpret_cast<const kDataType*>(qm_h.data_ptr()), k_ptr,
       reinterpret_cast<const kDataType*>(qkm.data_ptr()),
       delta_s.data_ptr<float>(), Nb, Nh, Nh_kv, Mb, Nkv, Nkv_pad,
-      static_cast<int>(K.size(3)), stream, &Lkv);
+      static_cast<int>(K.size(3)), stream, &Lkv, causal ? 1 : 0, q_start_row);
 
   if constexpr (!fused_qkv) {
     // smooth_v: per-(b,hkv) V column mean. The attention kernel computes,

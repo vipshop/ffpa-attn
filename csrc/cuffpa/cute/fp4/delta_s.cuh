@@ -176,7 +176,7 @@ __global__ void __launch_bounds__(256, 1)
                         CUTLASS_GRID_CONSTANT TmaB const tma_b,
                         const T* __restrict__ qkm, float* __restrict__ ds,
                         int Nh, int Nh_kv, int Mb, int Nkv, int Nkv_pad,
-                        int d_og, int Nb) {
+                        int d_og, int Nb, int causal, int q_start_row) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   using namespace cute;
   using Element = std::conditional_t<std::is_same<T, __half>::value,
@@ -354,7 +354,14 @@ __global__ void __launch_bounds__(256, 1)
   const float* src =
       reinterpret_cast<const float*>(smem_raw) + row * kLdAcc + c4;
   float* out = ds + ((long)(bh * Mb) + m_global) * Nkv_pad + n_tile * 128 + c4;
-  const int n_valid = Nkv - n_tile * 128 - c4;  // valid cols in this span
+  // Causal: DS[mb, n] only ever feeds the scores of q rows in block mb, so
+  // columns past this block's last q row are never read (the kernel masks
+  // them with -inf before the softmax). Drop those stores: the DS plane is
+  // the largest fp4 aux tensor, and half of it is dead weight under causal.
+  const int n_lim = causal ? min(Nkv, q_start_row + (m_global + 1) * 128) : Nkv;
+  const int n_valid = n_lim - n_tile * 128 - c4;  // valid cols in this span
+  if (n_valid <= 0)
+    return;
 #pragma unroll
   for (int i = 0; i < 16; ++i) {
     const float* s = src + i * 4;
@@ -379,7 +386,8 @@ inline void launch_fp4_delta_s_cute_sm120(const T* qm, const T* k, const T* qkm,
                                           float* ds, int Nb, int Nh, int Nh_kv,
                                           int Mb, int Nkv, int Nkv_pad,
                                           int d_og, cudaStream_t stream,
-                                          const ffpa_fp8::Fp8InputLayout& L) {
+                                          const ffpa_fp8::Fp8InputLayout& L,
+                                          int causal = 0, int q_start_row = 0) {
   using namespace cute;
   constexpr int kChunk = 64;
   constexpr int kStages = 3;
@@ -414,14 +422,15 @@ inline void launch_fp4_delta_s_cute_sm120(const T* qm, const T* k, const T* qkm,
   const int m_tiles = (Mb + 127) / 128;
   dim3 grid(tc, Nb * Nh * m_tiles);
   kernel<<<grid, 256, smem, stream>>>(tma_a, tma_b, qkm, ds, Nh, Nh_kv, Mb, Nkv,
-                                      Nkv_pad, d_og, Nb);
+                                      Nkv_pad, d_og, Nb, causal, q_start_row);
 }
 
 template <typename T, int kHeadDim>
 inline void launch_fp4_delta_s_sm120(
     const T* qm, const T* k, const T* qkm, float* ds, int Nb, int Nh, int Nh_kv,
     int Mb, int Nkv, int Nkv_pad, int d_og, cudaStream_t stream,
-    const ffpa_fp8::Fp8InputLayout* Lkv = nullptr) {
+    const ffpa_fp8::Fp8InputLayout* Lkv = nullptr, int causal = 0,
+    int q_start_row = 0) {
   // nullptr keeps the historical BHND addressing (bh*Nkv*d_og plane base).
   const ffpa_fp8::Fp8InputLayout L =
       Lkv ? *Lkv
@@ -430,8 +439,9 @@ inline void launch_fp4_delta_s_sm120(
   // small-Mb cross shapes stay on wmma.
   constexpr int kDChunks = kHeadDim / 64;
   if (kDChunks >= 4 || Mb >= 32 || (Mb >= 16 && Nkv_pad >= 4096)) {
-    launch_fp4_delta_s_cute_sm120<T, kHeadDim>(
-        qm, k, qkm, ds, Nb, Nh, Nh_kv, Mb, Nkv, Nkv_pad, d_og, stream, L);
+    launch_fp4_delta_s_cute_sm120<T, kHeadDim>(qm, k, qkm, ds, Nb, Nh, Nh_kv,
+                                               Mb, Nkv, Nkv_pad, d_og, stream,
+                                               L, causal, q_start_row);
     return;
   }
   const int tc = Nkv_pad / 128;
