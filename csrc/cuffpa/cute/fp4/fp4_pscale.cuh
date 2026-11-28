@@ -253,6 +253,90 @@ struct SoftmaxFused {
     // in the e2m1 (0,6] domain); only the pack consumes acc now.
   }
 
+  // Full-N128 max/rescale phase for score-slot pipelining. The two N64
+  // slots are exponentiated and packed independently afterwards; once a slot
+  // has been consumed it can be refilled with the next tile's QK scores
+  // without losing the row statistics of the complete tile.
+  template <bool FirstTile, bool InfCheck = false, typename TensorAcc,
+            typename TensorMax>
+  CUTE_DEVICE void prepare_online_softmax(TensorAcc& acc, TensorMax& AbsMaxP,
+                                          const float softmax_scale_log2) {
+    Tensor rv =
+        make_tensor(acc.data(), convert_to_reduction_layout(acc.layout()));
+    static_assert(decltype(size<1, 1>(rv))::value == 4,
+                  "score-slot pipeline expects four N32 repeats");
+    if constexpr (FirstTile) {
+      fill(row_max, -INFINITY);
+      clear(row_sum);
+      fill(scores_scale, 1.f);
+    }
+    Tensor scores_max_prev = make_fragment_like(row_max);
+    if constexpr (!FirstTile)
+      cute::copy(row_max, scores_max_prev);
+    CUTE_UNROLL
+    for (int mi = 0; mi < size<0>(rv); ++mi) {
+      CUTE_UNROLL
+      for (int ni = 0; ni < size<1, 1>(rv); ++ni) {
+        float local_max = -INFINITY;
+        CUTE_UNROLL
+        for (int ei = 0; ei < size<1, 0>(rv); ++ei)
+          local_max = fmaxf(local_max, rv(mi, make_coord(ei, ni)));
+        const float max_recv = __shfl_xor_sync(0xFFFFFFFFu, local_max, 1);
+        AbsMaxP(mi, ni) = fmaxf(local_max, max_recv);
+        row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
+      }
+      const float max_recv = __shfl_xor_sync(0xFFFFFFFFu, row_max(mi), 2);
+      row_max(mi) = fmaxf(row_max(mi), max_recv);
+      if constexpr (!FirstTile) {
+        const float scores_max_cur =
+            !InfCheck ? row_max(mi)
+                      : (row_max(mi) == -INFINITY ? 0.f : row_max(mi));
+        scores_scale(mi) = ptx_exp2((scores_max_prev(mi) - scores_max_cur) *
+                                    softmax_scale_log2);
+        row_sum(mi) *= scores_scale(mi);
+      }
+    }
+  }
+
+  // Exponentiate and normalize one retired N64 score slot. This is the same
+  // arithmetic as online_softmax_with_quant, restricted to two of the four
+  // N32 groups, so interleaving it with next-tile QK does not change values.
+  template <int ScoreSlot, bool InfCheck = false, typename TensorAcc,
+            typename TensorMax>
+  CUTE_DEVICE void softmax_quantize_n64(TensorAcc& acc, TensorMax& AbsMaxP,
+                                        const float softmax_scale_log2) {
+    static_assert(ScoreSlot == 0 || ScoreSlot == 1, "N64 score slot");
+    Tensor rv =
+        make_tensor(acc.data(), convert_to_reduction_layout(acc.layout()));
+    static_assert(decltype(size<1, 1>(rv))::value == 4,
+                  "score-slot pipeline expects four N32 repeats");
+    CUTE_UNROLL
+    for (int mi = 0; mi < size<0>(rv); ++mi) {
+      const float max_scaled =
+          InfCheck
+              ? (row_max(mi) == -INFINITY ? 0.f
+                                          : (row_max(mi) * softmax_scale_log2 +
+                                             fp8_scalexfp4_scale_log2))
+              : (row_max(mi) * softmax_scale_log2 + fp8_scalexfp4_scale_log2);
+      CUTE_UNROLL
+      for (int g = ScoreSlot * 2; g < ScoreSlot * 2 + 2; ++g) {
+        const float a = AbsMaxP(mi, g);
+        const float sfp2 =
+            ptx_exp2(a * softmax_scale_log2 - max_scaled + fp4_scale_log2);
+        AbsMaxP(mi, g) = sfp2;
+        const float a_arg = (a == -INFINITY) ? 0.f : a;
+        const float c = fmaf(-a_arg, softmax_scale_log2, -fp4_scale_log2);
+        CUTE_UNROLL
+        for (int ei = 0; ei < size<1, 0>(rv); ++ei) {
+          const float q =
+              ptx_exp2(fmaf(rv(mi, make_coord(ei, g)), softmax_scale_log2, c));
+          rv(mi, make_coord(ei, g)) = q;
+          row_sum(mi) = fmaf(q, sfp2, row_sum(mi));
+        }
+      }
+    }
+  }
+
   template <typename TensorAcc>
   CUTE_DEVICE void finalize(TensorAcc& o_store) {
     Tensor o_store_reduction_view = make_tensor(
