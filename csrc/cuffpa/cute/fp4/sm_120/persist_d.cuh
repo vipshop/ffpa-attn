@@ -490,9 +490,20 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
         // k_full/v_full of one stage per kv_tile), so the counters must
         // not interleave.
         const int g0 = g;
-        // V prologue before K: V0 is only consumed after QK0 + softmax, so
-        // issuing it first is always safe (mirrors fp8 persist_d; the steady
-        // state below already issues V ahead of K).
+        // N64 score-slot refill consumes the next K tile before the current
+        // V tile, so issue K before V in the producer prologue as well.
+        for (int s = 0; s < kStages - 1; ++s) {
+          if (s < Tc_eff) {
+            const int seq = g0 + s;
+            const int stage = seq % kStages;
+            const int phase = (seq / kStages) & 1;
+            CtaBarrier::wait(&k_empty[stage], phase);
+            TmaBarrier::arrive_and_expect_tx(&k_full[stage], Traits::kTxBytesK);
+            copy(tma_k.with(k_full[stage]), tKgK(_, s), tKsK(_, stage));
+            copy(tma_sfk.with(k_full[stage]), tKgSFK(_, s), tKsSFK(_, stage));
+            copy(tma_ds.with(k_full[stage]), tDSgDS(_, s), tDSsDS(_, stage));
+          }
+        }
         for (int s = 0; s < kStages - 1; ++s) {
           if (s < Tc_eff) {
             const int seq = g0 + s;
@@ -513,23 +524,27 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
             }
           }
         }
-        for (int s = 0; s < kStages - 1; ++s) {
-          if (s < Tc_eff) {
-            const int seq = g0 + s;
-            const int stage = seq % kStages;
-            const int phase = (seq / kStages) & 1;
-            CtaBarrier::wait(&k_empty[stage], phase);
-            TmaBarrier::arrive_and_expect_tx(&k_full[stage], Traits::kTxBytesK);
-            copy(tma_k.with(k_full[stage]), tKgK(_, s), tKsK(_, stage));
-            copy(tma_sfk.with(k_full[stage]), tKgSFK(_, s), tKsSFK(_, stage));
-            copy(tma_ds.with(k_full[stage]), tDSgDS(_, s), tDSsDS(_, stage));
-          }
-        }
         // The first slot-0 (Q-region alias) write lands at steady tile 0;
         // wait for the consumer's Q/SFQ s2r + lse dot first.
         if (kQSmemReuse && Tc_eff >= kStages)
           CtaBarrier::wait(&q_consumed, wl & 1);
         for (int tile = 0; tile < Tc_eff; ++tile) {
+          {
+            const int k_tile = tile + kStages - 1;
+            if (k_tile < Tc_eff) {
+              const int seq = g0 + k_tile;
+              const int stage = seq % kStages;
+              const int phase = (seq / kStages) & 1;
+              CtaBarrier::wait(&k_empty[stage], phase);
+              TmaBarrier::arrive_and_expect_tx(&k_full[stage],
+                                               Traits::kTxBytesK);
+              copy(tma_k.with(k_full[stage]), tKgK(_, k_tile), tKsK(_, stage));
+              copy(tma_sfk.with(k_full[stage]), tKgSFK(_, k_tile),
+                   tKsSFK(_, stage));
+              copy(tma_ds.with(k_full[stage]), tDSgDS(_, k_tile),
+                   tDSsDS(_, stage));
+            }
+          }
           {
             const int v_tile = tile + kStages - 1;
             if (v_tile < Tc_eff) {
@@ -551,22 +566,6 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
                 copy(tma_sfvt.with(v_full[stage]), tVgSFVt(_, v_tile),
                      tVsSFVt(_, kQSmemReuse ? vslot - 1 : stage));
               }
-            }
-          }
-          {
-            const int k_tile = tile + kStages - 1;
-            if (k_tile < Tc_eff) {
-              const int seq = g0 + k_tile;
-              const int stage = seq % kStages;
-              const int phase = (seq / kStages) & 1;
-              CtaBarrier::wait(&k_empty[stage], phase);
-              TmaBarrier::arrive_and_expect_tx(&k_full[stage],
-                                               Traits::kTxBytesK);
-              copy(tma_k.with(k_full[stage]), tKgK(_, k_tile), tKsK(_, stage));
-              copy(tma_sfk.with(k_full[stage]), tKgSFK(_, k_tile),
-                   tKsSFK(_, stage));
-              copy(tma_ds.with(k_full[stage]), tDSgDS(_, k_tile),
-                   tDSsDS(_, stage));
             }
           }
           // bias(t+1) issued last (fp16 persist_d pattern): its empty-wait
@@ -849,101 +848,30 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
 
     clear(tOrO_store);
 
-#pragma unroll 1
-    for (int kv_tile = 0; kv_tile < Tc_eff; ++kv_tile, ++g) {
-      const int k_stg = g % kStages;
-      const int k_phase = (g / kStages) & 1;
-      const int v_stg = k_stg;
-      const int v_phase = k_phase;
-      // Slot rotation keyed on the work-local tile index; barriers stay on
-      // the global sequence (v_stg), smem index remapped via v_mem.
-      const int v_slot = kQSmemReuse ? (kv_tile + 1) % kStages : k_stg;
-      const int v_mem = kQSmemReuse ? (v_slot == 0 ? 0 : v_slot - 1) : k_stg;
+    if constexpr (kHeadDim == 128 && !kPvMxfp8 && !kHasAttnBias) {
+      auto add_delta_s_slot = [&](auto& acc, int stage, auto score_slot) {
+        constexpr int Slot = decltype(score_slot)::value;
+        auto tSsDS_stage = recast<float4>(sDS(_, _, stage));
+        auto acc_float4 = recast<float4>(acc);
+        const int quad_id = (threadIdx.x % 4) * 2;
+        CUTLASS_PRAGMA_UNROLL
+        for (int local_i = 0; local_i < 2; ++local_i) {
+          const int i = Slot * 2 + local_i;
+          const int num = quad_id + i * 8;
+          const float4 ds0 =
+              tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num, _0{}));
+          const float4 ds1 =
+              tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num + 1, _0{}));
+          acc_float4(make_coord(make_coord(_0{}, _0{}), _0{}), _0{}, i) = ds0;
+          acc_float4(make_coord(make_coord(_0{}, _0{}), _1{}), _0{}, i) = ds0;
+          acc_float4(make_coord(make_coord(_0{}, _1{}), _0{}), _0{}, i) = ds1;
+          acc_float4(make_coord(make_coord(_0{}, _1{}), _1{}), _0{}, i) = ds1;
+        }
+      };
 
-      TmaBarrier::wait(&k_full[k_stg], k_phase);
-      cutlass::arch::fence_view_async_shared();
-
-      // delta_s preloads the rank-1 qm@K^T term into the C accumulator
-      // before the QK mma chain adds on top (writes tSrS regs only - no
-      // overlap with gemm_ss_fp4's tSrK/tSrSFK operand loads).
-      add_delta_s(tSrS, k_stg);
-      gemm_ss_fp4(tSrS, tSrQ, tSrSFQ, tSrK, tSrSFK, tSsK, tSsSFK, tiled_mma_qk,
-                  smem_tiled_copy_K, smem_thr_copy_K, smem_tiled_copy_SFK,
-                  smem_thr_copy_SFK, k_empty, k_stg);
-
-      // Masking: kv-tail (padded columns) + causal (bottom-right). The
-      // logical column indexes the PERMUTED storage order, so the token
-      // position goes through kv_perm32; the -inf assignment overwrites any
-      // delta_s garbage in masked slots. Softmax InfCheck handles rows whose
-      // valid columns all land outside this tile.
-      {
+      auto apply_mask = [&](int kv_tile) {
         auto scores = make_tensor(tSrS.data(),
                                   convert_to_reduction_layout(tSrS.layout()));
-        // Additive attn bias in the dequantized score domain; the fused
-        // softmax below applies softmax_scale_log2, so bias/scale_orig
-        // lands as +bias in softmax-input units. The -INFINITY assignments
-        // in the masking below simply override it (masked slots' delta_s
-        // garbage is overwritten the same way). Tile path (PC-0-1): the
-        // smem tile holds ORIGINAL token order, the injection indexes it
-        // through kv_perm32 just like the gmem variant.
-        // Bias tail guards: rows/cols of this tile inside the real row
-        // window [q_start_row, Nq) x [0, Nkv); pad entries skip the bias
-        // load (the masking below overrides their scores anyway).
-        const int bias_q_valid = min(kBr, Nq - q_start_row - Br_base);
-        const int bias_kv_valid = min(kBc, Nkv - kv_tile * kBc);
-        if constexpr (kHasAttnBias && kBiasMode != 0) {
-          const int b_stg = bias_gc % kBiasStages;
-          if constexpr (kBiasMode != 3) {
-            const int b_phase = (bias_gc / kBiasStages) & 1;
-            TmaBarrier::wait(&bias_full[b_stg], b_phase);
-            cutlass::arch::fence_view_async_shared();
-          }
-          const int b_slot_u16 = ((kBiasMode == 1) ? kBr * kBc : kBc) *
-                                 ((attn_bias_dtype == 3) ? 2 : 1);
-          // mode 3: the resident vector's tile-t segment sits at t*kBc.
-          const uint16_t* b_slot =
-              bias_base + (kBiasMode == 3 ? (long long)kv_tile * kBc *
-                                                ((attn_bias_dtype == 3) ? 2 : 1)
-                                          : (long long)b_stg * b_slot_u16);
-          constexpr int s_row = (kBiasMode == 1) ? kBc : 0;
-          if (attn_bias_dtype == 3)
-            ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
-                float, decltype(scores), decltype(tScS_rc), kSRows, kSCols>(
-                scores, tScS_rc, reinterpret_cast<const float*>(b_slot), s_row,
-                1, 1.0f / scale_orig);
-          else if (attn_bias_dtype == 2)
-            ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
-                cutlass::bfloat16_t, decltype(scores), decltype(tScS_rc),
-                kSRows, kSCols>(
-                scores, tScS_rc,
-                reinterpret_cast<const cutlass::bfloat16_t*>(b_slot), s_row, 1,
-                1.0f / scale_orig);
-          else
-            ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
-                cutlass::half_t, decltype(scores), decltype(tScS_rc), kSRows,
-                kSCols>(scores, tScS_rc,
-                        reinterpret_cast<const cutlass::half_t*>(b_slot), s_row,
-                        1, 1.0f / scale_orig);
-          if constexpr (kBiasMode != 3)
-            CtaBarrier::arrive(&bias_empty[b_stg]);
-          ++bias_gc;
-        } else if constexpr (kHasAttnBias) {
-          const bool full_tile = bias_q_valid >= kBr && bias_kv_valid >= kBc;
-          if (__builtin_expect(full_tile, 1))
-            ffpa_fp4::apply_attn_bias_fp4_rowcol<
-                decltype(scores), decltype(tScS_rc), kSRows, kSCols, false>(
-                scores, tScS_rc, attn_bias, attn_bias_dtype, attn_bias_stride_b,
-                attn_bias_stride_h, attn_bias_stride_m, attn_bias_stride_n,
-                Nb_id, Nh_id, q_start_row + Br_base, kv_tile, kBc,
-                1.0f / scale_orig, bias_q_valid, bias_kv_valid);
-          else
-            ffpa_fp4::apply_attn_bias_fp4_rowcol<
-                decltype(scores), decltype(tScS_rc), kSRows, kSCols, true>(
-                scores, tScS_rc, attn_bias, attn_bias_dtype, attn_bias_stride_b,
-                attn_bias_stride_h, attn_bias_stride_m, attn_bias_stride_n,
-                Nb_id, Nh_id, q_start_row + Br_base, kv_tile, kBc,
-                1.0f / scale_orig, bias_q_valid, bias_kv_valid);
-        }
         const int kv_valid = Nkv - kv_tile * kBc;
         const bool tail_tile = kv_valid < kBc;
         const bool causal_tile = kv_tile >= mask_start_tile;
@@ -963,65 +891,266 @@ __global__ void __launch_bounds__(384, 1) persist_d_ws_fwd_cute_fp4_sm120(
             }
           }
         }
-      }
-
-      // Online softmax fused with the P quantization prep: updates the
-      // running row max/sum (rescaling O lazily via scores_scale below),
-      // shifts scores into the P2 = P*2688 domain inside exp2 (the 1/(448*6)
-      // global scale folded in, see fp4_pscale.cuh), and records the per-
-      // 16-token-group absmax into AbsMaxP for quantize_and_pack_p.
-      // InfCheck flushes rows whose valid columns all fall outside this
-      // tile (causal top-left / fully masked), keeping row_sum finite.
-      if (kv_tile == 0)
-        softmax_fused.template online_softmax_with_quant</*FirstTile=*/true,
-                                                         /*InfCheck=*/true>(
-            tSrS, AbsMaxP, softmax_scale_log2);
-      else
-        softmax_fused.template online_softmax_with_quant</*FirstTile=*/false,
-                                                         /*InfCheck=*/true>(
-            tSrS, AbsMaxP, softmax_scale_log2);
-
-      // V is loaded after the softmax so the QK math and the V TMA overlap;
-      // k_stg == v_stg by construction (same tile sequence drives both).
-      TmaBarrier::wait(&v_full[v_stg], v_phase);
-      cutlass::arch::fence_view_async_shared();
-
-      auto gemm_rs_pv = [&](auto& tgt) {
-        if (kQSmemReuse && v_slot == 0) {
-          if constexpr (kPvMxfp8)
-            gemm_rs_mxfp8(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt0, tOsSFVt0,
-                          tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
-                          smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
-                          tSrS_reduction_view, v_empty, v_stg, wg_tid & 31, 0);
-          else
-            gemm_rs_fp4(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt0, tOsSFVt0,
-                        tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
-                        smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
-                        tSrS_conversion_view, v_empty, v_stg, 0);
-        } else if constexpr (kPvMxfp8) {
-          gemm_rs_mxfp8(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt, tOsSFVt,
-                        tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
-                        smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
-                        tSrS_reduction_view, v_empty, v_stg, wg_tid & 31,
-                        v_mem);
-        } else {
-          gemm_rs_fp4(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt, tOsSFVt,
-                      tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
-                      smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
-                      tSrS_conversion_view, v_empty, v_stg, v_mem);
-        }
       };
 
-      // Lazy rescale (PC-11, per-row): pre-scale the resident O in place
-      // (rows whose scale stayed 1.0 skip the multiply inside rescale_acc)
-      // and let the gemm accumulate directly -- same shape as the fp8
-      // persist-D kernel. This replaces the old temp-fragment +
-      // rescale_o merge; per-row guarding keeps the dense-tile fast path
-      // (zero FMUL) so the FMUL never enters the MMA chain unguarded.
-      if (kv_tile > 0)
+      auto process_score_slot = [&](int kv_tile, auto score_slot,
+                                    auto has_next) {
+        constexpr int Slot = decltype(score_slot)::value;
+        constexpr bool HasNext = decltype(has_next)::value;
+        softmax_fused.template softmax_quantize_n64<Slot, /*InfCheck=*/true>(
+            tSrS, AbsMaxP, softmax_scale_log2);
+        if constexpr (Slot == 0)
+          __syncwarp();
+        quantize_and_pack_p(Int<Slot>{}, AbsMaxP, tSrS_conversion_view, tOrP,
+                            tOrSFP);
+
+        if constexpr (HasNext) {
+          const int next_g = g + 1;
+          const int next_stg = next_g % kStages;
+          const int next_phase = (next_g / kStages) & 1;
+          if constexpr (Slot == 0) {
+            TmaBarrier::wait(&k_full[next_stg], next_phase);
+            cutlass::arch::fence_view_async_shared();
+          }
+          add_delta_s_slot(tSrS, next_stg, score_slot);
+          gemm_ss_fp4_n64<Slot>(tSrS, tSrQ, tSrSFQ, tSrK, tSrSFK, tSsK, tSsSFK,
+                                tiled_mma_qk, smem_tiled_copy_K,
+                                smem_thr_copy_K, smem_tiled_copy_SFK,
+                                smem_thr_copy_SFK, next_stg);
+          if constexpr (Slot == 1)
+            cutlass::arch::ClusterBarrier::arrive(k_empty + next_stg);
+        }
+
+        const int v_stg = g % kStages;
+        const int v_phase = (g / kStages) & 1;
+        const int v_slot = kQSmemReuse ? (kv_tile + 1) % kStages : v_stg;
+        const int v_mem = kQSmemReuse ? (v_slot == 0 ? 0 : v_slot - 1) : v_stg;
+        if constexpr (Slot == 0) {
+          TmaBarrier::wait(&v_full[v_stg], v_phase);
+          cutlass::arch::fence_view_async_shared();
+        }
+        if (kQSmemReuse && v_slot == 0)
+          gemm_rs_fp4_n64<Slot>(tOrO_store, tOrP, tOrSFP, tOrVt, tOrSFVt,
+                                tOsVt0, tOsSFVt0, tiled_mma_pv,
+                                smem_tiled_copy_V, smem_thr_copy_V,
+                                smem_tiled_copy_SFV, smem_thr_copy_SFV, 0);
+        else
+          gemm_rs_fp4_n64<Slot>(tOrO_store, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt,
+                                tOsSFVt, tiled_mma_pv, smem_tiled_copy_V,
+                                smem_thr_copy_V, smem_tiled_copy_SFV,
+                                smem_thr_copy_SFV, v_mem);
+      };
+
+      // Prologue: build and reduce the first complete N128 score tile.
+      const int k_stg = g % kStages;
+      const int k_phase = (g / kStages) & 1;
+      TmaBarrier::wait(&k_full[k_stg], k_phase);
+      cutlass::arch::fence_view_async_shared();
+      add_delta_s(tSrS, k_stg);
+      gemm_ss_fp4(tSrS, tSrQ, tSrSFQ, tSrK, tSrSFK, tSsK, tSsSFK, tiled_mma_qk,
+                  smem_tiled_copy_K, smem_thr_copy_K, smem_tiled_copy_SFK,
+                  smem_thr_copy_SFK, k_empty, k_stg);
+      apply_mask(0);
+      softmax_fused.template prepare_online_softmax</*FirstTile=*/true,
+                                                    /*InfCheck=*/true>(
+          tSrS, AbsMaxP, softmax_scale_log2);
+
+      // Steady state: retire both N64 slots, refill them with the following
+      // tile, then establish that tile's complete row statistics.
+#pragma unroll 1
+      for (int kv_tile = 0; kv_tile < Tc_eff - 1; ++kv_tile, ++g) {
+        process_score_slot(kv_tile, _0{}, std::true_type{});
+        process_score_slot(kv_tile, _1{}, std::true_type{});
+        cutlass::arch::ClusterBarrier::arrive(v_empty + (g % kStages));
+        apply_mask(kv_tile + 1);
+        softmax_fused.template prepare_online_softmax</*FirstTile=*/false,
+                                                      /*InfCheck=*/true>(
+            tSrS, AbsMaxP, softmax_scale_log2);
         softmax_fused.rescale_acc(tOrO_store);
-      gemm_rs_pv(tOrO_store);
-    }
+      }
+
+      // Drain: no following tile, so the hot loop above stays branch-free.
+      const int last_tile = Tc_eff - 1;
+      process_score_slot(last_tile, _0{}, std::false_type{});
+      process_score_slot(last_tile, _1{}, std::false_type{});
+      cutlass::arch::ClusterBarrier::arrive(v_empty + (g % kStages));
+      ++g;
+    } else
+#pragma unroll 1
+      for (int kv_tile = 0; kv_tile < Tc_eff; ++kv_tile, ++g) {
+        const int k_stg = g % kStages;
+        const int k_phase = (g / kStages) & 1;
+        const int v_stg = k_stg;
+        const int v_phase = k_phase;
+        // Slot rotation keyed on the work-local tile index; barriers stay on
+        // the global sequence (v_stg), smem index remapped via v_mem.
+        const int v_slot = kQSmemReuse ? (kv_tile + 1) % kStages : k_stg;
+        const int v_mem = kQSmemReuse ? (v_slot == 0 ? 0 : v_slot - 1) : k_stg;
+
+        TmaBarrier::wait(&k_full[k_stg], k_phase);
+        cutlass::arch::fence_view_async_shared();
+
+        // delta_s preloads the rank-1 qm@K^T term into the C accumulator
+        // before the QK mma chain adds on top (writes tSrS regs only - no
+        // overlap with gemm_ss_fp4's tSrK/tSrSFK operand loads).
+        add_delta_s(tSrS, k_stg);
+        gemm_ss_fp4(tSrS, tSrQ, tSrSFQ, tSrK, tSrSFK, tSsK, tSsSFK,
+                    tiled_mma_qk, smem_tiled_copy_K, smem_thr_copy_K,
+                    smem_tiled_copy_SFK, smem_thr_copy_SFK, k_empty, k_stg);
+
+        // Masking: kv-tail (padded columns) + causal (bottom-right). The
+        // logical column indexes the PERMUTED storage order, so the token
+        // position goes through kv_perm32; the -inf assignment overwrites any
+        // delta_s garbage in masked slots. Softmax InfCheck handles rows whose
+        // valid columns all land outside this tile.
+        {
+          auto scores = make_tensor(tSrS.data(),
+                                    convert_to_reduction_layout(tSrS.layout()));
+          // Additive attn bias in the dequantized score domain; the fused
+          // softmax below applies softmax_scale_log2, so bias/scale_orig
+          // lands as +bias in softmax-input units. The -INFINITY assignments
+          // in the masking below simply override it (masked slots' delta_s
+          // garbage is overwritten the same way). Tile path (PC-0-1): the
+          // smem tile holds ORIGINAL token order, the injection indexes it
+          // through kv_perm32 just like the gmem variant.
+          // Bias tail guards: rows/cols of this tile inside the real row
+          // window [q_start_row, Nq) x [0, Nkv); pad entries skip the bias
+          // load (the masking below overrides their scores anyway).
+          const int bias_q_valid = min(kBr, Nq - q_start_row - Br_base);
+          const int bias_kv_valid = min(kBc, Nkv - kv_tile * kBc);
+          if constexpr (kHasAttnBias && kBiasMode != 0) {
+            const int b_stg = bias_gc % kBiasStages;
+            if constexpr (kBiasMode != 3) {
+              const int b_phase = (bias_gc / kBiasStages) & 1;
+              TmaBarrier::wait(&bias_full[b_stg], b_phase);
+              cutlass::arch::fence_view_async_shared();
+            }
+            const int b_slot_u16 = ((kBiasMode == 1) ? kBr * kBc : kBc) *
+                                   ((attn_bias_dtype == 3) ? 2 : 1);
+            // mode 3: the resident vector's tile-t segment sits at t*kBc.
+            const uint16_t* b_slot =
+                bias_base + (kBiasMode == 3
+                                 ? (long long)kv_tile * kBc *
+                                       ((attn_bias_dtype == 3) ? 2 : 1)
+                                 : (long long)b_stg * b_slot_u16);
+            constexpr int s_row = (kBiasMode == 1) ? kBc : 0;
+            if (attn_bias_dtype == 3)
+              ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
+                  float, decltype(scores), decltype(tScS_rc), kSRows, kSCols>(
+                  scores, tScS_rc, reinterpret_cast<const float*>(b_slot),
+                  s_row, 1, 1.0f / scale_orig);
+            else if (attn_bias_dtype == 2)
+              ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
+                  cutlass::bfloat16_t, decltype(scores), decltype(tScS_rc),
+                  kSRows, kSCols>(
+                  scores, tScS_rc,
+                  reinterpret_cast<const cutlass::bfloat16_t*>(b_slot), s_row,
+                  1, 1.0f / scale_orig);
+            else
+              ffpa_fp4::apply_attn_bias_fp4_rowcol_smem<
+                  cutlass::half_t, decltype(scores), decltype(tScS_rc), kSRows,
+                  kSCols>(scores, tScS_rc,
+                          reinterpret_cast<const cutlass::half_t*>(b_slot),
+                          s_row, 1, 1.0f / scale_orig);
+            if constexpr (kBiasMode != 3)
+              CtaBarrier::arrive(&bias_empty[b_stg]);
+            ++bias_gc;
+          } else if constexpr (kHasAttnBias) {
+            const bool full_tile = bias_q_valid >= kBr && bias_kv_valid >= kBc;
+            if (__builtin_expect(full_tile, 1))
+              ffpa_fp4::apply_attn_bias_fp4_rowcol<
+                  decltype(scores), decltype(tScS_rc), kSRows, kSCols, false>(
+                  scores, tScS_rc, attn_bias, attn_bias_dtype,
+                  attn_bias_stride_b, attn_bias_stride_h, attn_bias_stride_m,
+                  attn_bias_stride_n, Nb_id, Nh_id, q_start_row + Br_base,
+                  kv_tile, kBc, 1.0f / scale_orig, bias_q_valid, bias_kv_valid);
+            else
+              ffpa_fp4::apply_attn_bias_fp4_rowcol<
+                  decltype(scores), decltype(tScS_rc), kSRows, kSCols, true>(
+                  scores, tScS_rc, attn_bias, attn_bias_dtype,
+                  attn_bias_stride_b, attn_bias_stride_h, attn_bias_stride_m,
+                  attn_bias_stride_n, Nb_id, Nh_id, q_start_row + Br_base,
+                  kv_tile, kBc, 1.0f / scale_orig, bias_q_valid, bias_kv_valid);
+          }
+          const int kv_valid = Nkv - kv_tile * kBc;
+          const bool tail_tile = kv_valid < kBc;
+          const bool causal_tile = kv_tile >= mask_start_tile;
+          if (tail_tile || causal_tile) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int row = 0; row < kSRows; ++row) {
+              const int q_pos = q_start_row + Br_base +
+                                cute::get<0>(tScS_rc(row, 0)) + kv_offset;
+              CUTLASS_PRAGMA_UNROLL
+              for (int col = 0; col < kSCols; ++col) {
+                const int j = cute::get<1>(tScS_rc(row, col));
+                const int k_pos = kv_tile * kBc + kv_perm32(j);
+                if (tail_tile && kv_perm32(j) >= kv_valid)
+                  scores(row, col) = -INFINITY;
+                if (causal_tile && k_pos > q_pos)
+                  scores(row, col) = -INFINITY;
+              }
+            }
+          }
+        }
+
+        // Online softmax fused with the P quantization prep: updates the
+        // running row max/sum (rescaling O lazily via scores_scale below),
+        // shifts scores into the P2 = P*2688 domain inside exp2 (the 1/(448*6)
+        // global scale folded in, see fp4_pscale.cuh), and records the per-
+        // 16-token-group absmax into AbsMaxP for quantize_and_pack_p.
+        // InfCheck flushes rows whose valid columns all fall outside this
+        // tile (causal top-left / fully masked), keeping row_sum finite.
+        if (kv_tile == 0)
+          softmax_fused.template online_softmax_with_quant</*FirstTile=*/true,
+                                                           /*InfCheck=*/true>(
+              tSrS, AbsMaxP, softmax_scale_log2);
+        else
+          softmax_fused.template online_softmax_with_quant</*FirstTile=*/false,
+                                                           /*InfCheck=*/true>(
+              tSrS, AbsMaxP, softmax_scale_log2);
+
+        // V is loaded after the softmax so the QK math and the V TMA overlap;
+        // k_stg == v_stg by construction (same tile sequence drives both).
+        TmaBarrier::wait(&v_full[v_stg], v_phase);
+        cutlass::arch::fence_view_async_shared();
+
+        auto gemm_rs_pv = [&](auto& tgt) {
+          if (kQSmemReuse && v_slot == 0) {
+            if constexpr (kPvMxfp8)
+              gemm_rs_mxfp8(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt0, tOsSFVt0,
+                            tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
+                            smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
+                            tSrS_reduction_view, v_empty, v_stg, wg_tid & 31,
+                            0);
+            else
+              gemm_rs_fp4(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt0, tOsSFVt0,
+                          tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
+                          smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
+                          tSrS_conversion_view, v_empty, v_stg, 0);
+          } else if constexpr (kPvMxfp8) {
+            gemm_rs_mxfp8(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt, tOsSFVt,
+                          tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
+                          smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
+                          tSrS_reduction_view, v_empty, v_stg, wg_tid & 31,
+                          v_mem);
+          } else {
+            gemm_rs_fp4(tgt, tOrP, tOrSFP, tOrVt, tOrSFVt, tOsVt, tOsSFVt,
+                        tiled_mma_pv, smem_tiled_copy_V, smem_thr_copy_V,
+                        smem_tiled_copy_SFV, smem_thr_copy_SFV, AbsMaxP,
+                        tSrS_conversion_view, v_empty, v_stg, v_mem);
+          }
+        };
+
+        // Lazy rescale (PC-11, per-row): pre-scale the resident O in place
+        // (rows whose scale stayed 1.0 skip the multiply inside rescale_acc)
+        // and let the gemm accumulate directly -- same shape as the fp8
+        // persist-D kernel. This replaces the old temp-fragment +
+        // rescale_o merge; per-row guarding keeps the dense-tile fast path
+        // (zero FMUL) so the FMUL never enters the MMA chain unguarded.
+        if (kv_tile > 0)
+          softmax_fused.rescale_acc(tOrO_store);
+        gemm_rs_pv(tOrO_store);
+      }
 
     softmax_fused.finalize(tOrO_store);
 

@@ -142,6 +142,74 @@ CUTE_DEVICE void gemm_ss_fp4(TensorC& acc, TensorQA& tSrQ, TensorQSF& tSrSFQ,
   }
 }
 
+// Refill one N64 score slot with the next KV tile while the other slot is
+// still being consumed. The B fragment's second mode indexes the four N32
+// repeats; slicing it directly avoids reinterpretation of the nested atom
+// mode. The caller releases k_empty after slot 1 has been refilled.
+template <int ScoreSlot, typename TensorC, typename TensorQA,
+          typename TensorQSF, typename TensorKB, typename TensorKSF,
+          typename TensorSK, typename TensorSKSF, typename TiledMma,
+          typename TiledCopyK, typename ThreadCopyK, typename TiledCopyKSF,
+          typename ThreadCopyKSF>
+CUTE_DEVICE void gemm_ss_fp4_n64(
+    TensorC& acc, TensorQA& tSrQ, TensorQSF& tSrSFQ, TensorKB& tSrK,
+    TensorKSF& tSrSFK, TensorSK const& tSsK, TensorSKSF const& tSsSFK,
+    TiledMma tiled_mma_qk, TiledCopyK tiled_copy_k, ThreadCopyK thread_copy_k,
+    TiledCopyKSF tiled_copy_ksf, ThreadCopyKSF thread_copy_ksf, int stage) {
+  static_assert(ScoreSlot == 0 || ScoreSlot == 1, "N64 score slot");
+  auto copy_view_k = thread_copy_k.retile_D(tSrK);
+  auto copy_view_ksf = thread_copy_ksf.retile_D(tSrSFK);
+  auto tSsK_stage = tSsK(_, _, _, stage);
+  auto tSsSFK_stage = tSsSFK(_, _, _, stage);
+  auto copy_k_group = [&](auto group_id) {
+    copy(tiled_copy_k, tSsK_stage(_, group_id, _0{}),
+         copy_view_k(_, group_id, _0{}));
+    copy(tiled_copy_ksf, tSsSFK_stage(_, group_id, _0{}),
+         copy_view_ksf(_, group_id, _0{}));
+  };
+  copy_k_group(Int<ScoreSlot * 2>{});
+  copy_k_group(Int<ScoreSlot * 2 + 1>{});
+  CUTLASS_PRAGMA_UNROLL
+  for (int k_block = 0; k_block < size<2>(tSrQ); ++k_block) {
+    auto mma_n = [&](auto n) {
+      cute::gemm(
+          tiled_mma_qk,
+          make_zip_tensor(tSrQ(_, _, k_block), tSrSFQ(_, _, k_block))(_, _0{}),
+          make_zip_tensor(tSrK(_, _, k_block), tSrSFK(_, _, k_block))(_, n),
+          acc(_, _0{}, n));
+    };
+    mma_n(Int<ScoreSlot * 2>{});
+    mma_n(Int<ScoreSlot * 2 + 1>{});
+  }
+}
+
+// PV for one pre-softmaxed N64 slot. The caller packs P before refilling the
+// score registers; this helper owns only the B-side s2r copy and MMA, while
+// the caller releases v_empty after both slots have completed.
+template <int MmaK, typename TensorC, typename TensorPA, typename TensorPSF,
+          typename TensorVB, typename TensorVSF, typename TensorSV,
+          typename TensorSVSF, typename TiledMma, typename TiledCopyV,
+          typename ThreadCopyV, typename TiledCopyVSF, typename ThreadCopyVSF>
+CUTE_DEVICE void gemm_rs_fp4_n64(
+    TensorC& tgt, TensorPA& tOrP, TensorPSF& tOrSFP, TensorVB& tOrVt,
+    TensorVSF& tOrSFVt, TensorSV const& tOsVt, TensorSVSF const& tOsSFVt,
+    TiledMma tiled_mma_pv, TiledCopyV tiled_copy_v, ThreadCopyV thread_copy_v,
+    TiledCopyVSF tiled_copy_vsf, ThreadCopyVSF thread_copy_vsf, int v_mem) {
+  auto copy_view_v = thread_copy_v.retile_D(tOrVt);
+  auto copy_view_vsf = thread_copy_vsf.retile_D(tOrSFVt);
+  auto tOsVt_stage = tOsVt(_, _, _, v_mem);
+  auto tOsSFVt_stage = tOsSFVt(_, _, _, v_mem);
+  copy(tiled_copy_v, tOsVt_stage(_, _, Int<MmaK>{}),
+       copy_view_v(_, _, Int<MmaK>{}));
+  copy(tiled_copy_vsf, tOsSFVt_stage(_, _, Int<MmaK>{}),
+       copy_view_vsf(_, _, Int<MmaK>{}));
+  cute::gemm(
+      tiled_mma_pv,
+      make_zip_tensor(tOrP(_, _, Int<MmaK>{}), tOrSFP(_, _, Int<MmaK>{})),
+      make_zip_tensor(tOrVt(_, _, Int<MmaK>{}), tOrSFVt(_, _, Int<MmaK>{})),
+      tgt);
+}
+
 // Split-D QK step: one 64-wide D chunk per call, accumulating into the
 // shared [kBr, kBc] S tile (delta_s preloads the accumulator first). The
 // chunk TiledMmaQK (Tile-K=64) yields rank-2 per-chunk fragments, so there
