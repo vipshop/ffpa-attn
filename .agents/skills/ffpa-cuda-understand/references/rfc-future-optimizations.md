@@ -2132,8 +2132,10 @@ FC-13 让 sm_89 fp8 persist-D 功能落地（256T non-WS cp.async，计算层照
 | 23 | sm_89 fp8 kBc=64 单 CTA（对齐 Sage CTA_K=64） | 负已回退（2026-09-14） | **987.1µs（-8.5%）**；tile 数翻倍（32→64）放大每 tile 固定开销（2×wait + 2×syncthreads + 依赖链排队）；数值反略好（6.31e-2 vs 7.65e-2）。**结论：Sage 的收益来自 2 CTA/SM 拆链，不是 kBc=64 本身** |
 | 24 | sm_89 fp8 kBr=128 / 128T（MMA_M=2，意图复刻 Sage CTA_Q=128） | 结构性不可行（2026-09-14 实测证伪） | perm pack 的 16 字节组跨 m-tile：fragment layout MMA_M=1 `((2,2),1,8):((1,2),0,4)`（组 = 4 n-tile 同 m-tile ✓）vs MMA_M=2 `((2,2),2,8):((1,2),4,8)`（组跨 m-tile ✗）；实测 parity rel err **1.2524e+00**（随机级）。要 MMA_M≥2 必须换 m16n16 atom（PC-16 方向③） |
 | 25 | sm_89 fp8 「运行时分支 wait」修 drain race 语义 | 负已回退（2026-09-14） | **+18%（910→1076µs）**——延迟/依赖链受限 kernel 对循环内分支结构极敏感（每 tile ~+500 cycles，非指令数问题）。正解 = drain 段提交**空组**（零回退，913e711） |
+| 26 | fp8 persist-D 二轮优化（PC-21，2026-11-28：ping-pong / QK 提前流水 / f32x2 / scale 折叠 / 量化链改写 / f32 acc / per-block V） | 全部证伪，**用户裁定 #406 收敛** | 画像：tensor 78.83%（IMMA 38.22+HMMA 40.61），Sage2 73.45% 且 MMA 指令数相同；前置链冷缓存 DRAM 92~94%；wave 尾部 = `ceil(waves)` 下界（Hq=55/56/32 三点实证）。实测：**QK ping-pong −5~6%**；**QK 提前一 tile + 独立 P8 +27%**（K/V LDSM 挤兑，MIO throttle +848%）；**packed f32x2 指令数不变**（SASS 无 F32X2，ptxas 展开为标量，`max.f32x2` 不存在）；scale 折进 dequant 指令数仅 −0.09%（fast-math 已自动结合）；f32 PV acc 慢 4.8%；per-block V 端到端持平；Q quant 8 线程/行单 kernel −6% 但 e2e 噪声内。kBr=256 / S 双缓冲被寄存器/smem 上限封死。剩余 21% tensor 空闲 = warp 内串行依赖 + 1 CTA/SM，无可用杠杆 |
 
 **跨实验元教训**：fp8 attn kernel 微优化已到顶（kernel 级稳定优于 SageAttention +1.1~2.3%）；
+**sm_120 fp8 persist-D 于 PC-21（2026-11-28）由用户裁定在 #406 收敛**（#26：保持 O/LSE 逐位一致下九条路线全部无稳定收益，勿再重开；重启须先放宽数值约束或换目标）；
 **fp4 persist-D 微优化同样到顶（2026-09-11 PC-4 关闭：wait 31% = 低 occupancy + softmax→pack→PV 串行链的结构性代价，tensor pipe 54% 的缺口无可攻克热点）**；
 **sm_89 fp8 persist-D 亦然（2026-09-14 PC-16 收敛：#22-#23 证明装载/指令/tile 尺寸三类微优化全负或零，
 唯一有效方向是 2 CTA/SM 拆链 -5%；#24 说明该方向的 MMA_M=2 变体被 perm-pack 契约锁死，须走 sub-tile 或换 atom）**；
